@@ -119,7 +119,7 @@ resource "azurerm_function_app" "function_app" {
     WEBSITES_ENABLE_APP_SERVICE_STORAGE = "false"
     FUNCTIONS_EXTENSION_VERSION         = "~4"
     FUNCTIONS_WORKER_RUNTIME            = "python"
-    FUNCTIONS_WORKER_RUNTIME_VERSION    = "3.11"
+    FUNCTIONS_WORKER_RUNTIME_VERSION    = "3.10"
     APPINSIGHTS_INSTRUMENTATIONKEY      = azurerm_application_insights.app_insights.instrumentation_key
     AZURE_STORAGE_ACCOUNT_NAME          = azurerm_storage_account.storage.name
     AZURE_STORAGE_ACCOUNT_KEY           = azurerm_storage_account.storage.primary_access_key
