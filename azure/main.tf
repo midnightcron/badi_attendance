@@ -5,6 +5,10 @@ terraform {
       source  = "hashicorp/azurerm"
       version = "~> 2.0"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.0"
+    }
   }
 }
 
@@ -12,12 +16,26 @@ provider "azurerm" {
   features {}
 }
 
+provider "random" {
+}
+
+# Generate unique but stable suffix for storage accounts
+resource "random_string" "storage_suffix" {
+  length  = 4
+  special = false
+  upper   = false
+  keepers = {
+    project_name = var.project_name
+    environment  = var.environment
+  }
+}
+
 # Local variables
 locals {
-  project_name         = var.project_name
-  environment          = var.environment
-  storage_account_name = replace("${local.project_name}-${local.environment}-sa", "-", "")
-  function_storage_name = replace("${local.project_name}-${local.environment}-func-sa", "-", "")
+  project_name          = var.project_name
+  environment           = var.environment
+  storage_account_name  = replace("badisa${random_string.storage_suffix.result}", "-", "")
+  function_storage_name = replace("badfuncsa${random_string.storage_suffix.result}", "-", "")
 }
 
 # Resource Group
@@ -49,40 +67,6 @@ resource "azurerm_storage_container" "logs" {
   name                  = "logs"
   storage_account_name  = azurerm_storage_account.storage.name
   container_access_type = "private"
-}
-
-# App Service Plan (for Web App)
-resource "azurerm_app_service_plan" "app_plan" {
-  name                = "${local.project_name}-${local.environment}-plan"
-  location            = azurerm_resource_group.rg.location
-  resource_group_name = azurerm_resource_group.rg.name
-  kind                = "Linux"
-  reserved            = true
-
-  sku {
-    tier = "Basic"
-    size = "B1"
-  }
-}
-
-# Web App
-resource "azurerm_app_service" "web_app" {
-  name                = "${local.project_name}-${local.environment}-app"
-  location            = azurerm_resource_group.rg.location
-  resource_group_name = azurerm_resource_group.rg.name
-  app_service_plan_id = azurerm_app_service_plan.app_plan.id
-
-  site_config {
-    always_on        = true
-    linux_fx_version = "PYTHON|3.9"
-  }
-
-  app_settings = {
-    WEBSITES_ENABLE_APP_SERVICE_STORAGE = "false"
-    AZURE_STORAGE_ACCOUNT_NAME          = azurerm_storage_account.storage.name
-    AZURE_STORAGE_ACCOUNT_KEY           = azurerm_storage_account.storage.primary_access_key
-    BLOB_CONTAINER_NAME                 = azurerm_storage_container.scraped_data.name
-  }
 }
 
 # Storage Account for Function App

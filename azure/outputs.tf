@@ -9,11 +9,6 @@ output "storage_account_key" {
   sensitive   = true
 }
 
-output "web_app_url" {
-  description = "URL of the web app"
-  value       = "https://${azurerm_app_service.web_app.default_site_hostname}"
-}
-
 output "function_app_name" {
   description = "Name of the function app"
   value       = azurerm_function_app.function_app.name
