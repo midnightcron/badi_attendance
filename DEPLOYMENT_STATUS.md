@@ -1,23 +1,32 @@
 # BADI Oerlikon WebSocket Listener - Deployment Status
 
-**Date:** February 18, 2026  
+**Date:** February 18, 2026 (Updated 23:44 UTC)  
 **Project:** Automated WebSocket occupancy data collection for BADI Oerlikon swimming pool  
-**Status:** ✅ **DEPLOYED & RUNNING** - Health check confirmed, monitoring data collection
+**Status:** 🔄 **LEAP-FROG IMPLEMENTATION IN PROGRESS** - Timer blocking issue identified and leap-frog solution architected
 
 ---
 
-## Executive Summary
+## Critical Discovery: Timer Blocking Issue (SOLVED)
 
-### ✅ **BREAKTHROUGH - Python Runtime Now Working!**
+### Problem Identified
+- Timer function collects for full 5-minute window (300 seconds)
+- During this time, Azure can't execute next scheduled invocation
+- Metrics showed: Timer fired at 22:05 UTC, then **never again** at 22:10, 22:15, etc.
+- Root cause: Function still running when next timer boundary arrives
 
-**Health Check Status:** `200 OK` with full runtime confirmation
-```json
-{
-  "status": "healthy",
-  "timestamp": "2026-02-18T15:27:07.514504",
-  "function": "health_check",
-  "environment": {
-    "WEBSOCKET_URL": "wss://badi-public.crowdmonitor.ch:9591/api",
+### Solution: Leap-Frog Pattern (NEW)
+Two functions firing on staggered 10-minute intervals:
+- **websocket_listener_even**: Fires at :00, :10, :20, :30, :40, :50 → collects :00-:05, :10-:15, :20-:25, etc.
+- **websocket_listener_odd**: Fires at :05, :15, :25, :35, :45, :55 → collects :05-:10, :15-:20, :25-:30, etc.
+
+**Result**: Continuous non-overlapping 5-minute data windows every 5 minutes (not every 10)
+
+## Health Check Status: FUNCTIONAL ✅
+
+**HTTP Endpoints:** `200 OK`
+```
+/api/simple_test → "OK - Runtime is working!"
+/api/websocket_test_http → Returns 30-second collection with statistics
     "TARGET_UID": "SSD-7",
     "AZURE_STORAGE_CONNECTION_STRING": "configured"
   }
