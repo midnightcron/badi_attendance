@@ -96,7 +96,7 @@ resource "azurerm_app_service_plan" "function_plan" {
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
   kind                = "FunctionApp"
-  reserved            = false
+  reserved            = true
 
   sku {
     tier = "Dynamic"
@@ -113,11 +113,13 @@ resource "azurerm_function_app" "function_app" {
   storage_account_name       = azurerm_storage_account.function_storage.name
   storage_account_access_key = azurerm_storage_account.function_storage.primary_access_key
   version                    = "~4"
+  os_type                    = "linux"
 
   app_settings = {
     WEBSITES_ENABLE_APP_SERVICE_STORAGE = "false"
     FUNCTIONS_EXTENSION_VERSION         = "~4"
     FUNCTIONS_WORKER_RUNTIME            = "python"
+    FUNCTIONS_WORKER_RUNTIME_VERSION    = "3.11"
     APPINSIGHTS_INSTRUMENTATIONKEY      = azurerm_application_insights.app_insights.instrumentation_key
     AZURE_STORAGE_ACCOUNT_NAME          = azurerm_storage_account.storage.name
     AZURE_STORAGE_ACCOUNT_KEY           = azurerm_storage_account.storage.primary_access_key
