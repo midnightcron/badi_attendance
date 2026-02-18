@@ -137,7 +137,11 @@ resource "azurerm_function_app" "function_app" {
     APPINSIGHTS_INSTRUMENTATIONKEY      = azurerm_application_insights.app_insights.instrumentation_key
     AZURE_STORAGE_ACCOUNT_NAME          = azurerm_storage_account.storage.name
     AZURE_STORAGE_ACCOUNT_KEY           = azurerm_storage_account.storage.primary_access_key
+    AZURE_STORAGE_CONNECTION_STRING     = azurerm_storage_account.storage.primary_connection_string
     BLOB_CONTAINER_NAME                 = azurerm_storage_container.scraped_data.name
-    SCRAPE_URL                          = "https://www.stadt-zuerich.ch/de/stadtleben/sport-und-erholung/sport-und-badeanlagen/hallenbaeder/oerlikon.html"
+    WEBSOCKET_URL                       = "wss://badi-public.crowdmonitor.ch:9591/api"
+    TARGET_UID                          = "SSD-7"
+    AzureWebJobsStorage                 = azurerm_storage_account.function_storage.primary_connection_string
+    AzureWebJobsDashboard               = azurerm_storage_account.function_storage.primary_connection_string
   }
 }

@@ -1,0 +1,6 @@
+#!/home/worreby/Documents/python_toy_projects/badi_oerlikon_attendence/.badi_venv/bin/python3.13
+import sys
+from dotenv.cli import cli
+if __name__ == '__main__':
+    sys.argv[0] = sys.argv[0].removesuffix('.exe')
+    sys.exit(cli())

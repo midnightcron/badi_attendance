@@ -1,8 +1,8 @@
 [tool.poetry]
-name = "historical-scraper-db"
+name = "badi-oerlikon-occupancy-scraper"
 version = "0.1.0"
-description = "A project for scraping historical data and storing it in a database."
-authors = ["Your Name <youremail@example.com>"]
+description = "A project for scraping Badi Oerlikon occupancy data and storing it in a database."
+authors = ["Your Name <robin@worreby.ch>"]
 license = "MIT"
 
 [tool.poetry.dependencies]
