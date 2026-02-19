@@ -21,31 +21,13 @@ import logging
 import os
 import time
 from datetime import datetime
-from .websocket_handler import WebSocketListener
 
 
 def main(mytimer: func.TimerRequest) -> None:
-    """
-    Azure Function: Leap-frog WebSocket listener (EVEN).
-
-    Timer: Fires every 10 minutes at :00 seconds
-    Collection: 5 minutes of continuous data
-    Data: Occupancy readings to Application Insights
-
-    Args:
-        mytimer: Timer trigger object
-    """
+    """Test: Just log and return."""
     logger = logging.getLogger("websocket_listener_even_main")
-    logger.info("[EVEN] Function invoked")
-    
-    try:
-        asyncio.run(_async_main(mytimer))
-        logger.info("[EVEN] Collection completed successfully")
-    except Exception as e:
-        logger.error(
-            f"[EVEN] Fatal error: {e}", exc_info=True
-        )
-        raise
+    logger.info("[EVEN] Function called at " + datetime.utcnow().isoformat())
+    return
 
 
 async def _async_main(mytimer: func.TimerRequest) -> None:

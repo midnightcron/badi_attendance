@@ -21,31 +21,13 @@ import logging
 import os
 import time
 from datetime import datetime
-from .websocket_handler import WebSocketListener
 
 
 def main(mytimer: func.TimerRequest) -> None:
-    """
-    Azure Function: Leap-frog WebSocket listener (ODD).
-
-    Timer: Fires every 10 minutes at :05 seconds
-    Collection: 5 minutes of continuous data
-    Data: Occupancy readings to Application Insights
-
-    Args:
-        mytimer: Timer trigger object
-    """
+    """Test: Just log and return."""
     logger = logging.getLogger("websocket_listener_odd_main")
-    logger.info("[ODD] Function invoked")
-    
-    try:
-        asyncio.run(_async_main(mytimer))
-        logger.info("[ODD] Collection completed successfully")
-    except Exception as e:
-        logger.error(
-            f"[ODD] Fatal error: {e}", exc_info=True
-        )
-        raise
+    logger.info("[ODD] Function called at " + datetime.utcnow().isoformat())
+    return
 
 
 async def _async_main(mytimer: func.TimerRequest) -> None:
