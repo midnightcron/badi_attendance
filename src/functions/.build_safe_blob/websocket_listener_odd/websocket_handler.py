@@ -7,7 +7,6 @@ Connects to CrowdMonitor WebSocket API and collects occupancy updates.
 import asyncio
 import json
 import logging
-import websockets
 from datetime import datetime
 
 
@@ -48,6 +47,9 @@ class WebSocketListener:
         Returns:
             List of {'occupancy': int, 'timestamp': str} dicts
         """
+        # Import websockets here (lazy load) - avoid init-time failures
+        import websockets
+        
         updates = []
         start_time = datetime.utcnow()
         
