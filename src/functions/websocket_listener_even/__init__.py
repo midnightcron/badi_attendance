@@ -23,13 +23,6 @@ import time
 from datetime import datetime
 from .websocket_handler import WebSocketListener
 
-# Try to import blob client, but don't fail if unavailable
-try:
-    from azure.storage.blob import BlobClient
-    BLOB_AVAILABLE = True
-except ImportError:
-    BLOB_AVAILABLE = False
-
 
 def main(mytimer: func.TimerRequest) -> None:
     """
@@ -42,11 +35,15 @@ def main(mytimer: func.TimerRequest) -> None:
     Args:
         mytimer: Timer trigger object
     """
+    logger = logging.getLogger("websocket_listener_even_main")
+    logger.info("[EVEN] Function invoked")
+    
     try:
         asyncio.run(_async_main(mytimer))
+        logger.info("[EVEN] Collection completed successfully")
     except Exception as e:
-        logging.error(
-            f"Fatal error in websocket_listener_even: {e}", exc_info=True
+        logger.error(
+            f"[EVEN] Fatal error: {e}", exc_info=True
         )
         raise
 
@@ -115,10 +112,12 @@ async def _async_main(mytimer: func.TimerRequest) -> None:
             )
 
             # Write to blob storage as CSV (if available)
-            if BLOB_AVAILABLE:
+            try:
                 await _write_to_blob(logger, updates, window_start, "even")
-            else:
-                logger.warning("[EVEN] Blob storage not available")
+            except Exception as blob_error:
+                logger.warning(
+                    f"[EVEN] Could not write to blob: {blob_error}"
+                )
         else:
             logger.warning(
                 "[EVEN] No updates received in 5-minute window"
@@ -133,6 +132,9 @@ async def _async_main(mytimer: func.TimerRequest) -> None:
 async def _write_to_blob(logger, updates, window_start, label):
     """Write occupancy readings to blob storage as CSV."""
     try:
+        # Local import to avoid module-level dependency issues
+        from azure.storage.blob import BlobClient
+        
         # Get blob storage connection details
         conn_str = os.getenv("AzureWebJobsStorage")
         container_name = os.getenv(
