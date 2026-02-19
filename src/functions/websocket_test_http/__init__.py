@@ -5,7 +5,7 @@ import asyncio
 import json
 import logging
 import os
-from websocket_listener.websocket_handler import WebSocketListener
+from .websocket_handler import WebSocketListener
 
 
 async def run_collection():
