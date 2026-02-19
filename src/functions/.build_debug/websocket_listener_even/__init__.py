@@ -23,13 +23,6 @@ import time
 from datetime import datetime
 from .websocket_handler import WebSocketListener
 
-# Try to import blob client, but don't fail if unavailable
-try:
-    from azure.storage.blob import BlobClient
-    BLOB_AVAILABLE = True
-except ImportError:
-    BLOB_AVAILABLE = False
-
 
 def main(mytimer: func.TimerRequest) -> None:
     """
@@ -113,12 +106,6 @@ async def _async_main(mytimer: func.TimerRequest) -> None:
             logger.info(
                 f"[EVEN] Sample updates: {json.dumps(updates[:5])}"
             )
-
-            # Write to blob storage as CSV (if available)
-            if BLOB_AVAILABLE:
-                await _write_to_blob(logger, updates, window_start, "even")
-            else:
-                logger.warning("[EVEN] Blob storage not available")
         else:
             logger.warning(
                 "[EVEN] No updates received in 5-minute window"
@@ -129,49 +116,3 @@ async def _async_main(mytimer: func.TimerRequest) -> None:
             f"[EVEN] Error in websocket_listener_even: {e}", exc_info=True
         )
         raise
-
-async def _write_to_blob(logger, updates, window_start, label):
-    """Write occupancy readings to blob storage as CSV."""
-    try:
-        # Get blob storage connection details
-        conn_str = os.getenv("AzureWebJobsStorage")
-        container_name = os.getenv(
-            "BLOB_CONTAINER_NAME", "occupancy-data"
-        )
-
-        if not conn_str:
-            logger.warning(
-                f"[{label.upper()}] AzureWebJobsStorage not configured, "
-                f"skipping blob write"
-            )
-            return
-
-        # Generate blob name: occupancy_2026-02-19_10_00.csv
-        blob_name = window_start.strftime("occupancy_%Y-%m-%d_%H_%M.csv")
-
-        # Build CSV content: timestamp,occupancy
-        csv_lines = ["timestamp,occupancy"]
-        for update in updates:
-            ts = update["timestamp"]
-            occ = update["occupancy"]
-            csv_lines.append(f"{ts},{occ}")
-
-        csv_content = "\n".join(csv_lines)
-
-        # Write to blob
-        blob_client = BlobClient.from_connection_string(
-            conn_str, container_name, blob_name
-        )
-        blob_client.upload_blob(csv_content, overwrite=True)
-
-        logger.info(
-            f"[{label.upper()}] Wrote {len(updates)} occupancy readings "
-            f"to blob: {blob_name}"
-        )
-
-    except Exception as e:
-        logger.error(
-            f"[{label.upper()}] Error writing to blob storage: {e}",
-            exc_info=True
-        )
-        # Don't raise - don't fail entire function if blob write fails

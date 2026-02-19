@@ -1,0 +1,14 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "WEBSOCKET_URL": "wss://badi-public.crowdmonitor.ch:9591/api",
+    "TARGET_UID": "SSD-7",
+    "AZURE_STORAGE_CONNECTION_STRING": "DefaultEndpointsProtocol=https;AccountName=badiapp;AccountKey=YOUR_KEY_HERE;EndpointSuffix=core.windows.net"
+  },
+  "Host": {
+    "LocalHttpPort": 7071,
+    "CORS": "*"
+  }
+}

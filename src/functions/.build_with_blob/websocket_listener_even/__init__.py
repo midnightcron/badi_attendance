@@ -21,14 +21,9 @@ import logging
 import os
 import time
 from datetime import datetime
+from io import BytesIO
+from azure.storage.blob import BlobClient
 from .websocket_handler import WebSocketListener
-
-# Try to import blob client, but don't fail if unavailable
-try:
-    from azure.storage.blob import BlobClient
-    BLOB_AVAILABLE = True
-except ImportError:
-    BLOB_AVAILABLE = False
 
 
 def main(mytimer: func.TimerRequest) -> None:
@@ -114,11 +109,8 @@ async def _async_main(mytimer: func.TimerRequest) -> None:
                 f"[EVEN] Sample updates: {json.dumps(updates[:5])}"
             )
 
-            # Write to blob storage as CSV (if available)
-            if BLOB_AVAILABLE:
-                await _write_to_blob(logger, updates, window_start, "even")
-            else:
-                logger.warning("[EVEN] Blob storage not available")
+            # Write to blob storage as CSV
+            await _write_to_blob(logger, updates, window_start, "even")
         else:
             logger.warning(
                 "[EVEN] No updates received in 5-minute window"

@@ -1,15 +1,15 @@
 """
-Azure Function: Leap-frog WebSocket listener (EVEN intervals).
+Azure Function: Leap-frog WebSocket listener (ODD intervals).
 
-Fires at :00, :10, :20, :30, :40, :50 seconds of every hour.
+Fires at :05, :15, :25, :35, :45, :55 seconds of every hour.
 Collects 5 minutes of continuous BADI Oerlikon occupancy data.
 Logs to Application Insights.
 
 Note: This is one of two leap-frog functions. The other
-(websocket_listener_odd) fires at :05, :15, :25, :35, :45, :55.
+(websocket_listener_even) fires at :00, :10, :20, :30, :40, :50.
 Together they provide continuous non-overlapping data collection.
 
-Schedule: 0 */10 * * * * (every 10 minutes at :00 seconds)
+Schedule: 5 */10 * * * * (every 10 minutes at :05 seconds)
 Expected: ~30-40 updates per 5-minute collection window
           (~1 update every 8-10 seconds from API = ~30-40 per 5 min)
 """
@@ -21,21 +21,16 @@ import logging
 import os
 import time
 from datetime import datetime
+from io import BytesIO
+from azure.storage.blob import BlobClient
 from .websocket_handler import WebSocketListener
-
-# Try to import blob client, but don't fail if unavailable
-try:
-    from azure.storage.blob import BlobClient
-    BLOB_AVAILABLE = True
-except ImportError:
-    BLOB_AVAILABLE = False
 
 
 def main(mytimer: func.TimerRequest) -> None:
     """
-    Azure Function: Leap-frog WebSocket listener (EVEN).
+    Azure Function: Leap-frog WebSocket listener (ODD).
 
-    Timer: Fires every 10 minutes at :00 seconds
+    Timer: Fires every 10 minutes at :05 seconds
     Collection: 5 minutes of continuous data
     Data: Occupancy readings to Application Insights
 
@@ -46,7 +41,7 @@ def main(mytimer: func.TimerRequest) -> None:
         asyncio.run(_async_main(mytimer))
     except Exception as e:
         logging.error(
-            f"Fatal error in websocket_listener_even: {e}", exc_info=True
+            f"Fatal error in websocket_listener_odd: {e}", exc_info=True
         )
         raise
 
@@ -57,19 +52,19 @@ async def _async_main(mytimer: func.TimerRequest) -> None:
 
     This function collects for the full 5-minute window, then returns
     quickly to avoid blocking the next leap-frog function. While this
-    function runs 22:00-22:05, websocket_listener_odd is idle.
-    When this returns at 22:05, websocket_listener_odd fires at 22:05
-    and collects 22:05-22:10, so there's no gap and no overlap.
+    function runs 22:05-22:10, websocket_listener_even is idle.
+    When this returns at 22:10, websocket_listener_even fires at 22:10
+    and collects 22:10-22:15, so there's no gap and no overlap.
     """
-    logger = logging.getLogger("websocket_listener_even")
+    logger = logging.getLogger("websocket_listener_odd")
     window_start = datetime.utcnow()
     start_time = time.time()
 
     if mytimer.past_due:
-        logger.warning("websocket_listener_even timer is past due")
+        logger.warning("websocket_listener_odd timer is past due")
 
     logger.info(
-        f"[EVEN] WebSocket listener (even) started at "
+        f"[ODD] WebSocket listener (odd) started at "
         f"{window_start.isoformat()}"
     )
 
@@ -80,7 +75,7 @@ async def _async_main(mytimer: func.TimerRequest) -> None:
         target_uid = os.getenv("TARGET_UID", "SSD-7")
 
         logger.info(
-            f"[EVEN] Connecting to: {websocket_url}, UID: {target_uid}"
+            f"[ODD] Connecting to: {websocket_url}, UID: {target_uid}"
         )
 
         # Collect for full 5 minutes (300 seconds)
@@ -91,7 +86,7 @@ async def _async_main(mytimer: func.TimerRequest) -> None:
 
         elapsed = time.time() - start_time
         logger.info(
-            f"[EVEN] Collected {len(updates)} updates in 5-minute window "
+            f"[ODD] Collected {len(updates)} updates in 5-minute window "
             f"(actual time: {elapsed:.1f}s)"
         )
 
@@ -106,27 +101,22 @@ async def _async_main(mytimer: func.TimerRequest) -> None:
             }
 
             logger.info(
-                f"[EVEN] Stats: count={stats['count']}, min={stats['min']}, "
+                f"[ODD] Stats: count={stats['count']}, min={stats['min']}, "
                 f"max={stats['max']}, avg={stats['avg']:.1f}, "
                 f"median={stats['median']}"
             )
             logger.info(
-                f"[EVEN] Sample updates: {json.dumps(updates[:5])}"
+                f"[ODD] Sample updates: {json.dumps(updates[:5])}"
             )
 
-            # Write to blob storage as CSV (if available)
-            if BLOB_AVAILABLE:
-                await _write_to_blob(logger, updates, window_start, "even")
-            else:
-                logger.warning("[EVEN] Blob storage not available")
+            # Write to blob storage as CSV
+            await _write_to_blob(logger, updates, window_start, "odd")
         else:
-            logger.warning(
-                "[EVEN] No updates received in 5-minute window"
-            )
+            logger.warning("[ODD] No updates received in 5-minute window")
 
     except Exception as e:
         logger.error(
-            f"[EVEN] Error in websocket_listener_even: {e}", exc_info=True
+            f"[ODD] Error in websocket_listener_odd: {e}", exc_info=True
         )
         raise
 

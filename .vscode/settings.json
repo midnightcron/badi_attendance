@@ -1,4 +1,16 @@
 {
     "editor.defaultFormatter": "ms-python.black-formatter",
-    "notebook.defaultFormatter": "ms-python.black-formatter"
+    "notebook.defaultFormatter": "ms-python.black-formatter",
+    "azureFunctions.projectSubpath": "src/functions",
+    "files.exclude": {
+        "obj": true,
+        "bin": true
+    },
+    "azureFunctions.deploySubpath": "src/functions",
+    "azureFunctions.scmDoBuildDuringDeployment": true,
+    "azureFunctions.pythonVenv": ".venv",
+    "azureFunctions.projectLanguage": "Python",
+    "azureFunctions.projectRuntime": "~4",
+    "debug.internalConsoleOptions": "neverOpen",
+    "azureFunctions.preDeployTask": "func: extensions install"
 }
