@@ -1,226 +1,135 @@
-# Badi Oerlikon Occupancy Monitor - WebSocket Listener
+# Badi Oerlikon Occupancy Monitor
 
-Real-time occupancy monitoring for Badi Oerlikon swimming pool using WebSocket data collection and Azure cloud infrastructure.
+Real-time occupancy monitoring for Badi Oerlikon swimming pool using WebSocket data collection on Azure Functions.
 
-## 🚀 Quick Start
+## What It Does
 
-**Status:** ✅ Ready for deployment
+- Connects to the CrowdMonitor WebSocket API (`wss://badi-public.crowdmonitor.ch:9591/api`)
+- Monitors **SSD-7** (Badi Oerlikon) occupancy in real time
+- Collects ~75 readings per 5-minute window (one every ~4 seconds)
+- Saves CSV files with timestamp + occupancy to Azure Blob Storage
+- Serves a dashboard and REST API for querying historical data
 
-```bash
-# Local testing (Docker Compose)
-docker-compose -f docker-compose.functions.yml up
+## Architecture
 
-# Monitor execution
-docker logs -f badi_oerlikon_attendence_functions_1
+Two timer-triggered Azure Functions run a **leap-frog pattern** to achieve continuous 5-minute collection windows without overlap:
 
-# Deploy to Azure
-See: DEPLOYMENT_GUIDE_WEBSOCKET.md
+```
+Time:   :00   :05   :10   :15   :20   :25   :30
+EVEN:   |=====|     |=====|     |=====|     |=====|
+ODD:          |=====|     |=====|     |=====|
 ```
 
-## 📋 What This Does
+Each function collects for 298 seconds (just under 5 minutes), then hands off to the other. Both have `useMonitor: false` to prevent catch-up cascade from Azure's singleton lock.
 
-- Connects to CrowdMonitor WebSocket API (`wss://badi-public.crowdmonitor.ch:9591/api`)
-- Monitors **SSD-7** (BADI Oerlikon) occupancy data
-- Collects ~60 occupancy readings every 5 minutes
-- Saves aggregated data (min, max, avg, median) to Azure Blob Storage
-- Runs serverless on Azure Functions (Consumption Plan)
-- **Cost:** ~$15/month (vs $100+ for traditional hosting)
+**Infrastructure:**
+- **Runtime:** Azure Functions, Python 3.11, v1 programming model
+- **Plan:** Flex Consumption (FC1) with `always_ready` instances for both timer functions
+- **Storage:** Azure Blob Storage (CSV files in `occupancy-data/YYYY-MM-DD/occupancy_HH_MM.csv`)
+- **IaC:** Terraform (azurerm ~4.0)
+- **CI/CD:** GitHub Actions (zip deploy on push to `main`)
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 badi_oerlikon_attendence/
-├── README.md                           # This file
-├── QUICKSTART.md                       # Getting started guide
-├── DEPLOYMENT_GUIDE_WEBSOCKET.md       # Azure deployment instructions
+├── src/functions/                      # Azure Functions app root
+│   ├── websocket_listener_even/        # Timer: :00, :10, :20, :30, :40, :50
+│   ├── websocket_listener_odd/         # Timer: :05, :15, :25, :35, :45, :55
+│   ├── get_occupancy/                  # HTTP API: GET /api/occupancy
+│   ├── serve_dashboard/                # HTTP: GET /api/dashboard
+│   ├── health_check/                   # HTTP: GET /api/health_check
+│   ├── utils/                          # Shared modules
+│   │   ├── websocket_collector.py      # Collection + stats + blob write
+│   │   ├── websocket_handler.py        # WebSocketListener class
+│   │   └── logger.py                   # Logging config
+│   ├── host.json                       # Function host config (10-min timeout)
+│   └── requirements.txt                # Python dependencies
 │
-├── src/
-│   ├── functions/                      # Azure Functions
-│   │   ├── websocket_listener/         # Main timer-triggered function
-│   │   ├── crawler_timer/              # Legacy function
-│   │   ├── azure_storage/              # Blob storage module
-│   │   ├── utils/                      # Logging utilities
-│   │   └── requirements.txt            # Python dependencies
-│   │
-│   ├── azure_storage/                  # Original Azure storage module
-│   ├── db/                             # Legacy database code
-│   └── utils/                          # Utilities
+├── azure/                              # Terraform infrastructure
+│   ├── main.tf                         # Function App, Storage, App Insights
+│   ├── variables.tf                    # Input variables
+│   ├── outputs.tf                      # Terraform outputs
+│   └── terraform.tfvars                # Variable values
 │
-├── docs/                               # Detailed documentation
-│   ├── architecture/                   # System design & decisions
-│   ├── deployment/                     # Deployment guides & checklists
-│   ├── migration/                      # Migration history
-│   └── technical/                      # Technical details & troubleshooting
+├── .github/workflows/                  # CI/CD
+│   └── main_badi-oerlikon-func-01.yml  # Build + deploy to Azure Functions
 │
-├── docker-compose.functions.yml        # Local development environment
+├── scripts/scrape_websocket.py         # Standalone WebSocket debug script
+├── docker-compose.functions.yml        # Local dev (Azurite + Functions runtime)
 ├── pyproject.toml                      # Project metadata
-├── requirements.txt                    # Legacy requirements
-└── alembic.ini                         # Database migrations config
+└── docs/                               # Extended documentation
 ```
 
-## 🏗️ Architecture
+## Quick Start
 
-```
-CrowdMonitor API
-    ↓
-WebSocket Listener (Azure Function)
-    ↓
-5-minute data collection window
-    ├─ Connect to WebSocket
-    ├─ Collect ~60 updates (every 5 seconds)
-    └─ Calculate statistics
-        ↓
-    Blob Storage (JSON files)
-    ├─ File: 2026-02-17/HH-MM-to-HH-MM.json
-    └─ Contents: [occupancy readings], statistics, timestamps
-```
-
-**Timer:** Executes every 5 minutes (cron: `0 */5 * * * *`)
-**Timeout:** 10 minutes (we only use 5 minutes - safe buffer)
-**Data:** Occupancy readings, statistics, timestamps
-
-## 🚀 Getting Started
-
-### 1. Local Development
+### Local Development (Docker Compose)
 
 ```bash
 docker-compose -f docker-compose.functions.yml up
-docker logs -f badi_oerlikon_attendence_functions_1
 ```
 
-Expected output every 5 minutes:
+This starts Azurite (local blob emulator) and the Azure Functions runtime. Timer triggers fire automatically; HTTP endpoints available at `http://localhost:7071/api/`.
+
+### Deploy to Azure
+
+```bash
+# 1. Provision infrastructure
+cd azure
+terraform init
+terraform plan
+terraform apply
+
+# 2. Push to main branch — GitHub Actions deploys automatically
+git push origin main
 ```
-Connected to WebSocket: wss://badi-public.crowdmonitor.ch:9591/api
-Update 1: occupancy=45
+
+See [docs/deployment/](docs/deployment/) for detailed deployment guides.
+
+## HTTP Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/health_check` | GET | Runtime health + config status |
+| `/api/occupancy` | GET | Query occupancy data (params: `days`, `resolution`, `date`) |
+| `/api/dashboard` | GET | Self-contained HTML dashboard |
+
+## Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WEBSOCKET_URL` | `wss://badi-public.crowdmonitor.ch:9591/api` | CrowdMonitor WebSocket endpoint |
+| `TARGET_UID` | `SSD-7` | Location UID to monitor |
+| `AZURE_STORAGE_CONNECTION_STRING` | — | Blob storage connection string |
+| `BLOB_CONTAINER_NAME` | `occupancy-data` | Container for CSV data |
+
+## Data Format
+
+Each 5-minute window produces a CSV file:
+
+```
+occupancy-data/
+└── 2026-06-15/
+    ├── occupancy_00_00.csv
+    ├── occupancy_00_05.csv
+    ├── occupancy_00_10.csv
+    └── ...
+
+# CSV contents:
+timestamp,occupancy
+2026-06-15T00:00:03.123456,45
+2026-06-15T00:00:07.234567,46
 ...
-Collected 60 updates in 5-minute window
-Stats: count=60, min=32, max=67, avg=48.5, median=48
-Saved data to blob: 2026-02-17/HH-MM-to-HH-MM.json
 ```
 
-### 2. Deploy to Azure
+## Documentation
 
-```bash
-# Follow the deployment guide
-cat DEPLOYMENT_GUIDE_WEBSOCKET.md
-```
+| Path | Contents |
+|------|----------|
+| [docs/architecture/](docs/architecture/) | System design, leap-frog pattern, WebSocket protocol |
+| [docs/deployment/](docs/deployment/) | Azure deployment guides, checklists, secrets setup |
+| [docs/technical/](docs/technical/) | Timeout considerations, local testing, changelog |
 
-### 3. Validate & Monitor
+## License
 
-```bash
-# Check Azure logs (Application Insights)
-# See: docs/deployment/
-```
-
-## 📚 Documentation
-
-| Document | Purpose |
-|----------|---------|
-| **QUICKSTART.md** | 5-minute quick start guide |
-| **DEPLOYMENT_GUIDE_WEBSOCKET.md** | Step-by-step Azure deployment |
-| **docs/architecture/** | System design & WebSocket analysis |
-| **docs/deployment/** | Deployment checklists & guides |
-| **docs/technical/** | Troubleshooting & technical details |
-| **docs/migration/** | Historical migration notes |
-
-## ⚙️ Configuration
-
-**WebSocket Settings:**
-- URL: `wss://badi-public.crowdmonitor.ch:9591/api`
-- Target: SSD-7 (BADI Oerlikon)
-- Data Field: `currentfill` (occupancy count)
-- Collection: 5-minute windows
-
-**Azure Settings:**
-- Subscription: `cc569079-9e12-412d-8dfb-a5d60a028f75`
-- Functions Plan: Consumption (serverless)
-- Storage: Blob Storage (csv files)
-- Monitoring: Application Insights
-
-## 📊 Data Collected
-
-Each 5-minute window produces a JSON file:
-
-```json
-{
-  "timestamp": "2026-02-17T23:15:00Z",
-  "window_end": "2026-02-17T23:20:00Z",
-  "uid": "SSD-7",
-  "updates": [
-    {"timestamp": "...", "occupancy": 45},
-    {"timestamp": "...", "occupancy": 46},
-    ...
-  ],
-  "statistics": {
-    "count": 60,
-    "min": 32,
-    "max": 67,
-    "avg": 48.5,
-    "median": 48
-  }
-}
-```
-
-Storage location: `scraped-data/2026-02-17/HH-MM-to-HH-MM.json`
-
-## 🔧 Local Development
-
-### Requirements
-- Docker & Docker Compose
-- Python 3.9+
-- Ports available: 7071 (Functions), 10000-10002 (Storage)
-
-### Setup Instructions
-
-```bash
-# Start Docker Compose
-docker-compose -f docker-compose.functions.yml up
-
-# In another terminal, monitor logs
-docker logs -f badi_oerlikon_attendence_functions_1
-
-# Stop when done
-docker-compose -f docker-compose.functions.yml down
-```
-
-### Services
-- **Azure Functions Runtime**: `http://localhost:7071`
-- **Azurite (Storage Emulator)**: `http://localhost:10000-10002`
-
-## 📈 Performance & Costs
-
-| Metric | Value |
-|--------|-------|
-| Execution Time | ~2-4 seconds |
-| Frequency | Every 5 minutes |
-| Monthly Executions | 8,640 |
-| Monthly Cost | ~$0.96 |
-| Data Points/Day | ~17,280 (vs 24 with hourly scraping) |
-| **Total Monthly Cost** | **~$15/month** |
-
-## ✅ Testing Checklist
-
-- [x] Local Docker Compose runs
-- [x] WebSocket listener module imports
-- [x] Azure storage modules available
-- [x] All dependencies installed
-- [x] Configuration pre-filled for BADI Oerlikon
-- [x] Timer triggers configured
-- [x] Ready for Azure deployment
-
-## 🤝 Contributing
-
-For modifications or improvements:
-1. Update code in `src/functions/`
-2. Test locally with Docker Compose
-3. Update tests as needed
-4. Create a pull request
-
-## 📝 License
-
-MIT License. See LICENSE file for details.
-
----
-
-**Last Updated:** February 17, 2026  
-**Status:** ✅ Ready for Production Deployment
+MIT — see [LICENSE](LICENSE).

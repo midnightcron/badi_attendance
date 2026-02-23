@@ -1,412 +1,142 @@
 # Architecture Overview
 
-## System Components
+## System Design
 
-### 1. Frontend Web App (Azure App Service)
+The Badi Oerlikon Occupancy Monitor is a serverless data-collection pipeline built on Azure Functions. It continuously ingests real-time occupancy data from a public WebSocket API and persists it as CSV files in Azure Blob Storage.
 
-- **Technology**: Flask + HTML5/CSS3/JavaScript
-- **Purpose**: Display real-time pool occupancy data
-- **Features**:
-  - Real-time dashboard with auto-refresh
-  - Historical data browser
-  - Responsive design for mobile/desktop
-  - REST API for data retrieval
+### Components
 
-### 2. Azure Blob Storage
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Azure Resource Group                          │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │         Function App (Flex Consumption, FC1)              │   │
+│  │         Python 3.11, always_ready instances                │   │
+│  │                                                            │   │
+│  │  Timer Triggers (leap-frog):                               │   │
+│  │    websocket_listener_even  :00,:10,:20,:30,:40,:50        │   │
+│  │    websocket_listener_odd   :05,:15,:25,:35,:45,:55        │   │
+│  │                                                            │   │
+│  │  HTTP Triggers:                                            │   │
+│  │    GET /api/health_check    Runtime health                 │   │
+│  │    GET /api/occupancy       Query historical data          │   │
+│  │    GET /api/dashboard       Self-contained HTML dashboard  │   │
+│  └────────────────────┬─────────────────────────────────────┘   │
+│                       │                                          │
+│          ┌────────────▼────────────┐                             │
+│          │   Storage Account       │                             │
+│          │   (Standard LRS)        │                             │
+│          │                         │                             │
+│          │  occupancy-data/        │                             │
+│          │    YYYY-MM-DD/          │                             │
+│          │      occupancy_HH_MM.csv│                             │
+│          └─────────────────────────┘                             │
+│                                                                  │
+│  ┌─────────────────────────┐                                    │
+│  │  Application Insights   │  Traces, exceptions, live metrics  │
+│  └─────────────────────────┘                                    │
+└─────────────────────────────────────────────────────────────────┘
+         ▲
+         │ WebSocket (wss://)
+         │
+┌────────┴────────────────────────────┐
+│  CrowdMonitor Public API            │
+│  wss://badi-public.crowdmonitor.ch  │
+│  :9591/api                          │
+│  Updates every ~3-4 seconds         │
+│  ~32 Swiss swimming pool locations  │
+└─────────────────────────────────────┘
+```
 
-- **Purpose**: Persistent storage for scraped data
-- **Containers**:
-  - `scraped-data`: JSON files with pool data
-  - `logs`: Application and crawler logs
-- **Data Format**: JSON with timestamp metadata
-- **Access**: Via Python SDK with connection string or managed identity
+## Leap-Frog Pattern
 
-### 3. Continuous Crawler Service (Azure Container Instances)
+### Problem
+A single timer-triggered function collecting for 5 minutes (300 s) blocks the next scheduled invocation. Azure Functions' singleton lock prevents overlapping executions of the same function.
 
-- **Technology**: Python, Docker, Azure Container Instances
-- **Purpose**: Periodically scrape pool data
-- **Features**:
-  - Configurable scrape interval (default 1 hour)
-  - Automatic retry on failure
-  - Logs to blob storage
-  - Graceful error handling
+### Solution
+Two independent timer functions with staggered 10-minute schedules:
 
-### 4. Container Registry (Azure Container Registry)
+```
+Time:   :00   :05   :10   :15   :20   :25   :30   :35
+EVEN:   |=298s=|     |=298s=|     |=298s=|     |=298s=|
+ODD:          |=298s=|     |=298s=|     |=298s=|
+```
 
-- **Purpose**: Store and manage Docker images
-- **Images**:
-  - `badi-webapp:latest` - Web app image
-  - `badi-crawler:latest` - Crawler image
-- **CI/CD**: GitHub Actions automatically builds and pushes new images
+- **Even** fires at minutes 0, 10, 20, 30, 40, 50
+- **Odd** fires at minutes 5, 15, 25, 35, 45, 55
+- Each collects for 298 seconds (2 s under 5 min to avoid boundary overlap)
+- Together they produce a CSV file every 5 minutes with no gaps
+
+### useMonitor: false
+Both triggers set `useMonitor: false` in `function.json`. Without this, Azure's timer monitor tracks missed invocations and fires catch-up executions. When a function runs long (298 s), the catch-up mechanism holds the singleton lock and cascades into blocking subsequent invocations.
+
+### always_ready Instances
+The Terraform config provisions `always_ready` instances for both timer functions (`always_ready { name = "function:websocket_listener_even", instance_count = 1 }`). Without this, Flex Consumption may not wake up cold instances fast enough for timer triggers.
 
 ## Data Flow
 
-```text
-
-Web Browser
-    ↓
-    ├─→ GET / → [Web App] → Serves index.html
-    │
-    └─→ GET /api/data/* → [Web App API]
-                              ↓
-                         [Python Code]
-                              ↓
-                    [Azure Blob Storage]
-                              ↓
-                         Returns JSON
-                              ↓
-                    [JavaScript Charts]
-
-Scheduled Event
-    ↓
-[GitHub Actions Timer] (or Azure Logic Apps)
-    ↓
-[Trigger] → [Container Instance] → [Crawler Service]
-                                         ↓
-                                  [fetch_data]
-                                         ↓
-                                  [parse_html]
-                                         ↓
-                                  [save to blob]
-                                         ↓
-                              [Azure Blob Storage]
-
-```text
-
-## Deployment Topology
-
-```text
-
-┌──────────────────────────────────────────────────────────────┐
-│                    Azure Resource Group                        │
-├──────────────────────────────────────────────────────────────┤
-│                                                                │
-│  ┌─────────────────────┐         ┌──────────────────────┐   │
-│  │   App Service Plan  │         │ Container Registry   │   │
-│  ├─────────────────────┤         ├──────────────────────┤   │
-│  │                     │         │                      │   │
-│  │  ┌─────────────┐    │         │ badi-webapp:latest   │   │
-│  │  │   Web App   │────┼────────▶│ badi-crawler:latest  │   │
-│  │  │ (Linux, B1) │    │         │                      │   │
-│  │  └─────────────┘    │         └──────────────────────┘   │
-│  │      :5000          │                                      │
-│  │                     │                                      │
-│  └─────────────────────┘                                      │
-│           │                                                    │
-│           │                                                    │
-│  ┌────────▼──────────────────────────────────────────────┐  │
-│  │         Azure Storage Account (StorageV2)             │  │
-│  ├────────────────────────────────────────────────────────┤  │
-│  │                                                        │  │
-│  │  Blob Service                                          │  │
-│  │  ├── scraped-data (container)                         │  │
-│  │  │   ├── scraped*data*2024-01-15_14-30-00.json       │  │
-│  │  │   ├── scraped*data*2024-01-15_13-30-00.json       │  │
-│  │  │   └── ...                                          │  │
-│  │  └── logs (container)                                │  │
-│  │      └── crawler_2024-01-15.log                       │  │
-│  │                                                        │  │
-│  └────────────────────────────────────────────────────────┘  │
-│           ▲                                                    │
-│           │                                                    │
-│  ┌────────┴──────────────────────────────────────────────┐  │
-│  │  Container Instance (Crawler Service)                 │  │
-│  ├────────────────────────────────────────────────────────┤  │
-│  │                                                        │  │
-│  │  • Runs 24/7 with restart policy                      │  │
-│  │  • Scrapes every 1 hour                               │  │
-│  │  • Stores data to blob storage                        │  │
-│  │  • Handles errors gracefully                          │  │
-│  │                                                        │  │
-│  └────────────────────────────────────────────────────────┘  │
-│                                                                │
-└──────────────────────────────────────────────────────────────┘
-
-External:
-┌──────────────────────┐
-│  GitHub Repository   │
-├──────────────────────┤
-│  • Source code       │
-│  • GitHub Actions    │
-│  • CI/CD automation  │
-└──────────────────────┘
-     ↓ (on push to main)
-┌──────────────────────┐
-│  Build & Push Images │
-└──────────────────────┘
-     ↓
-[Azure Container Registry]
-
-```text
-
-## Key Integration Points
-
-### 1. Web App ↔ Blob Storage
-
-- **Authentication**: Connection string or Managed Identity
-- **Operations**: Read JSON files, list blobs
-- **Framework**: azure-storage-blob Python SDK
-
-### 2. Crawler ↔ Blob Storage
-
-- **Authentication**: Connection string or Managed Identity
-- **Operations**: Write JSON files, read for validation
-- **Framework**: azure-storage-blob Python SDK
-
-### 3. GitHub ↔ Azure Container Registry
-
-- **Authentication**: Service Principal with AcrPush role
-- **Operations**: Build images, push to registry
-- **Framework**: GitHub Actions + Azure CLI
-
-### 4. Azure Container Registry ↔ App Service
-
-- **Authentication**: Managed connection via deployment
-- **Operations**: Pull and run container image
-- **Update**: Manual or automated via CI/CD
-
-## Security Architecture
-
-```text
-
-                    Internet
-                       ↓
-        ┌──────────────────────────┐
-        │   Azure Front Door (CDN) │ ← Optional: DDoS protection
-        └──────────────┬───────────┘
-                       ↓
-        ┌──────────────────────────┐
-        │    HTTPS (TLS 1.2+)      │ ← Built-in with *.azurewebsites.net
-        └──────────────┬───────────┘
-                       ↓
-        ┌──────────────────────────────────────┐
-        │   Network Security Group (NSG)       │ ← Optional firewall rules
-        ├──────────────────────────────────────┤
-        │   Allow: HTTPS (443)                 │
-        │   Block: Everything else             │
-        └──────────────┬───────────────────────┘
-                       ↓
-        ┌──────────────────────────────────────┐
-        │    App Service Environment           │
-        ├──────────────────────────────────────┤
-        │   Private App Service Endpoints      │ ← Optional
-        │   (restricts access to VNet)         │
-        └──────────────┬───────────────────────┘
-                       ↓
-        ┌──────────────────────────────────────┐
-        │   Application Authentication         │
-        ├──────────────────────────────────────┤
-        │   • Connection strings managed       │
-        │   • No hardcoded credentials         │
-        │   • Environment variables per env    │
-        └──────────────┬───────────────────────┘
-                       ↓
-        ┌──────────────────────────────────────┐
-        │   Azure Storage Authentication       │
-        ├──────────────────────────────────────┤
-        │   • Managed Identity (preferred)     │
-        │   • Connection string (backup)       │
-        │   • Private endpoints (optional)     │
-        └──────────────────────────────────────┘
-
-```text
-
-## Cost Optimization Strategies
-
-### 1. Compute
-
-- Use **B1 App Service Plan** for development ($12/month)
-- Scale up to **B2+** only during peak load
-- Use **Azure Container Instances - spot pricing** for crawler ($30-50/month vs $100)
-- Implement **scale-to-zero** for non-critical crawlers
-
-### 2. Storage
-
-- Use **Blob Storage lifecycle policies** to archive old data
-- Move historical data to **Cool tier** after 30 days
-- Implement **data retention policies** (delete after 1 year)
-
-### 3. Bandwidth
-
-- Use **Azure CDN** for static assets
-- Enable **compression** in App Service
-- Minimize API response sizes
-
-### 4. Development
-
-- Use **Azurite** for local storage emulation (free)
-- Leverage **GitHub free tier** for CI/CD
-- Use **free tier databases** during development
-
-## Scaling Architecture
-
-### Current (Small Scale)
-
-- **Concurrent Users**: 10-50
-- **Scrape Frequency**: 1/hour
-- **Storage**: < 10 GB
-
-### Medium Scale
-
-```text
-
-Add:
-- Azure Traffic Manager for load balancing
-- Auto-scale App Service (2-5 instances)
-- Azure Database for structured queries
-- Azure CDN for static assets
-- Application Insights for monitoring
-
-```text
-
-### Enterprise Scale
-
-```text
-
-Add:
-- Azure Front Door (global distribution)
-- API Management for versioning
-- Event Grid for event-driven architecture
-- Service Bus for async processing
-- Azure DevOps for advanced CI/CD
-- Policy enforcement via Azure Policy
-
-```text
-
-## Disaster Recovery
-
-### Backup Strategy
-
-1. **Blob Storage**: Geographically redundant (GRS) enabled
-
-2. **Configuration**: Infrastructure as Code (Bicep) version controlled
-
-3. **Code**: Git repository with branching strategy
-
-### Recovery RTO/RPO
-
-- **RTO (Recovery Time Objective)**: 1 hour
-  - Redeploy infrastructure from Bicep
-  - Redeploy containers from registry
-- **RPO (Recovery Point Objective)**: 1 hour
-  - Blob storage GRS replication
-  - Last hourly crawl data
-
-### Failover Procedure
-
-```bash
-
-# 1. Switch to secondary region
-
-az config set defaults.group=<secondary-rg>
-
-# 2. Redeploy infrastructure
-
-./azure/deploy.sh
-
-# 3. Restore data from geo-redundant storage
-
-az storage account show-connection-string \
-  --account-name <storage-account> \
-  --resource-group <secondary-rg>
-
-# 4. Deploy containers and restart services
-
-# (same as initial deployment)
-
-```text
-
-## Monitoring & Observability
-
-### Key Metrics
-
-- **Web App**: Response time, error rate, CPU, memory
-- **Crawler**: Scrape success rate, duration, frequency
-- **Storage**: Read/write latency, capacity used
-- **Blobs**: Most recent update timestamp
-
-### Logging
-
-- **Application**: Flask logs to stdout → App Service → Log Analytics
-- **Crawler**: Python logging to blob storage + stdout
-- **Infrastructure**: Azure Activity Log → Log Analytics
-
-### Alerting
-
-- Crawler hasn't run in 2 hours
-- API error rate > 5%
-- Storage capacity > 80%
-- Response time > 5 seconds (p95)
-
-## Configuration Management
-
-### Environment Variables
-
-Managed via:
-
-1. **Local Development**: `.env` file
-
-2. **Docker**: `Dockerfile` ENV directives
-
-3. **App Service**: Configuration → Application settings
-
-4. **Container Instance**: Environment variables in deployment
-
-### Secrets
-
-- **Local**: `.env` file (NOT committed)
-- **Azure**: Azure Key Vault (optional)
-- **CI/CD**: GitHub Secrets
-
-## Code Organization
-
-```text
-
-src/
-├── api/                    # Flask REST API
-
-│   ├── app.py             # Flask application
-
-│   └── static/            # Frontend assets
-
-├── azure_storage/         # Azure integration
-
-│   ├── blob_adapter.py    # Low-level blob operations
-
-│   └── repository.py      # Business logic layer
-
-├── services/              # Application services
-
-│   └── crawler_service.py # Crawling logic
-
-├── scraper/               # Web scraping
-
-│   ├── fetcher.py        # HTTP requests
-
-│   └── parser.py         # HTML parsing
-
-├── db/                    # Database models (legacy)
-
-├── utils/                 # Utilities
-
-└── tests/                 # Unit tests
-
-```text
-
-## Future Enhancements
-
-1. **Real-time Updates**: WebSocket for live data
-
-2. **Notifications**: Email/SMS alerts for availability
-
-3. **Analytics**: Occupancy trends, peak hours analysis
-
-4. **Mobile App**: Native iOS/Android apps
-
-5. **Multi-pool Support**: Track multiple facilities
-
-6. **User Accounts**: Personalized preferences, bookmarks
-
-7. **Predictions**: ML-based occupancy predictions
-
-8. **Integration**: Calendar integration, facility booking
+```
+1. Timer fires (e.g., :00)
+2. websocket_listener_even main() → run_collection("even", mytimer)
+3. Connect to wss://badi-public.crowdmonitor.ch:9591/api
+4. Send "all" command
+5. Receive JSON array every ~3-4 seconds
+6. Extract SSD-7 currentfill → {timestamp, occupancy}
+7. Collect for 298 seconds (~75 readings)
+8. Compute stats: min, max, avg, median
+9. Write CSV to blob: occupancy-data/YYYY-MM-DD/occupancy_HH_MM.csv
+```
+
+## Code Structure
+
+```
+src/functions/
+├── utils/                          # Shared modules
+│   ├── websocket_collector.py      # run_collection() → _async_collect() → _write_to_blob()
+│   ├── websocket_handler.py        # WebSocketListener.collect_updates()
+│   └── logger.py                   # Logging configuration
+│
+├── websocket_listener_even/        # 13-line wrapper → run_collection("even")
+│   ├── __init__.py
+│   └── function.json               # cron: 0 0,10,20,30,40,50 * * * *
+│
+├── websocket_listener_odd/         # 13-line wrapper → run_collection("odd")
+│   ├── __init__.py
+│   └── function.json               # cron: 0 5,15,25,35,45,55 * * * *
+│
+├── get_occupancy/                  # HTTP API for querying stored data
+├── serve_dashboard/                # Serves dashboard.html
+├── health_check/                   # Runtime health endpoint
+├── host.json                       # functionTimeout: 10 min
+└── requirements.txt                # Python dependencies
+```
+
+## Infrastructure as Code
+
+Terraform (azurerm ~4.0) in `azure/`:
+
+| Resource | Type | Notes |
+|----------|------|-------|
+| Resource Group | `azurerm_resource_group` | `badi-oerlikon-dev-rg` |
+| Data Storage | `azurerm_storage_account` | Standard LRS, occupancy-data container |
+| Function Storage | `azurerm_storage_account` | Separate account for function runtime |
+| Service Plan | `azurerm_service_plan` | FC1 (Flex Consumption), Linux |
+| Function App | `azurerm_function_app_flex_consumption` | Python 3.11, always_ready |
+| App Insights | `azurerm_application_insights` | 30-day retention |
+
+## CI/CD
+
+GitHub Actions workflow (`.github/workflows/main_badi-oerlikon-func-01.yml`):
+
+1. **Build:** Checkout → Python 3.11 → pip install to `.python_packages` → verify critical imports → zip
+2. **Deploy:** Download artifact → Azure login (OIDC) → deploy via `Azure/functions-action`
+
+## WebSocket API Protocol
+
+- **Endpoint:** `wss://badi-public.crowdmonitor.ch:9591/api`
+- **Handshake:** Standard WebSocket upgrade
+- **Command:** Send `"all"` after connect
+- **Response:** JSON array of ~32 location objects, broadcast every 3-4 seconds
+- **Target field:** `currentfill` (string, needs `int(float(...))` conversion)
+- **Target UID:** `SSD-7` (Hallenbad Oerlikon)
