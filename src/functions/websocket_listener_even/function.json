@@ -5,7 +5,9 @@
       "name": "mytimer",
       "type": "timerTrigger",
       "direction": "in",
-      "schedule": "0 0,10,20,30,40,50 * * * *"
+      "schedule": "0 0,10,20,30,40,50 * * * *",
+      "useMonitor": false,
+      "runOnStartup": false
     }
   ]
 }
