@@ -82,10 +82,12 @@ async def _async_main(mytimer: func.TimerRequest) -> None:
         # Import WebSocketListener here (lazy load) to avoid init-time issues
         from .websocket_handler import WebSocketListener
 
-        # Collect for full 5 minutes (300s). The 10-minute functionTimeout
-        # in host.json gives headroom for the blob write after collection.
+        # Collect for ~5 minutes (298s). Slightly under 300s to avoid
+        # capturing a duplicate data point at the leap-frog boundary.
+        # The 10-minute functionTimeout in host.json gives headroom
+        # for the blob write after collection.
         listener = WebSocketListener(
-            url=websocket_url, target_uid=target_uid, duration_seconds=300
+            url=websocket_url, target_uid=target_uid, duration_seconds=298
         )
         updates = await listener.collect_updates()
 
