@@ -1,33 +1,36 @@
 """
-Azure Function: Serve the occupancy dashboard as a single-page HTML app.
+Azure Function: Serve the occupancy dashboard.
 
-GET /api/dashboard → Returns the full HTML page with embedded JS/CSS.
-
-This keeps everything self-contained: no separate static hosting needed.
-The page fetches data from the sibling /api/occupancy endpoint.
+GET /api/dashboard → Returns a Plotly-generated HTML page built entirely
+in Python.  No hand-written HTML/JS — all charts come from
+utils/dashboard_builder.py.
 """
 
 import azure.functions as func
-import os
+import logging
 
-# Read HTML at module load (cold start only)
-_html_path = os.path.join(os.path.dirname(__file__), "dashboard.html")
+logger = logging.getLogger("serve_dashboard")
 
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
-    """Serve the dashboard HTML page."""
+    """Build and return the Plotly dashboard."""
     try:
-        with open(_html_path, "r", encoding="utf-8") as f:
-            html_content = f.read()
+        from utils.dashboard_builder import build_dashboard_html
+
+        days = min(int(req.params.get("days", "30")), 90)
+        html = build_dashboard_html(lookback_days=days)
 
         return func.HttpResponse(
-            html_content,
+            html,
             status_code=200,
             mimetype="text/html",
+            headers={"Cache-Control": "public, max-age=300"},
         )
-    except FileNotFoundError:
+
+    except Exception as e:
+        logger.error(f"Dashboard error: {e}", exc_info=True)
         return func.HttpResponse(
-            "<h1>Dashboard not found</h1><p>dashboard.html is missing.</p>",
+            f"<h1>Dashboard error</h1><pre>{e}</pre>",
             status_code=500,
             mimetype="text/html",
         )
