@@ -1,6 +1,6 @@
-# BADI Oerlikon Occupancy Monitor - WebSocket Listener
+# Badi Oerlikon Occupancy Monitor - WebSocket Listener
 
-Real-time occupancy monitoring for BADI Oerlikon swimming pool using WebSocket data collection and Azure cloud infrastructure.
+Real-time occupancy monitoring for Badi Oerlikon swimming pool using WebSocket data collection and Azure cloud infrastructure.
 
 ## 🚀 Quick Start
 
@@ -134,7 +134,7 @@ cat DEPLOYMENT_GUIDE_WEBSOCKET.md
 **Azure Settings:**
 - Subscription: `cc569079-9e12-412d-8dfb-a5d60a028f75`
 - Functions Plan: Consumption (serverless)
-- Storage: Blob Storage (JSON files)
+- Storage: Blob Storage (csv files)
 - Monitoring: Application Insights
 
 ## 📊 Data Collected

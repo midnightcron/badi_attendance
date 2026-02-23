@@ -15,7 +15,7 @@ services:
 
   # Python Functions Runtime
   functions:
-    image: mcr.microsoft.com/azure-functions/python:4-python3.9
+    image: mcr.microsoft.com/azure-functions/python:4-python3.11
     ports:
       - "7071:80"
     depends_on:
