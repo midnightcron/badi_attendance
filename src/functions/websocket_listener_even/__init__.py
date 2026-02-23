@@ -2,7 +2,8 @@
 Azure Function: Leap-frog WebSocket listener (EVEN intervals).
 
 Fires at :00, :10, :20, :30, :40, :50 seconds of every hour.
-Collects 5 minutes of continuous BADI Oerlikon occupancy data.
+Collects 4.5 minutes of continuous BADI Oerlikon occupancy data
+(leaving 30s headroom for blob write within Azure timeout).
 Logs to Application Insights.
 
 Note: This is one of two leap-frog functions. The other
@@ -28,7 +29,7 @@ def main(mytimer: func.TimerRequest) -> None:
     Azure Function: Leap-frog WebSocket listener (EVEN).
 
     Timer: Fires every 10 minutes at :00 seconds
-    Collection: 5 minutes of continuous data
+    Collection: 4.5 minutes of continuous data
     Data: Occupancy readings to Application Insights
 
     Args:
@@ -49,11 +50,11 @@ def main(mytimer: func.TimerRequest) -> None:
 
 async def _async_main(mytimer: func.TimerRequest) -> None:
     """
-    Async implementation: Collect 5 minutes of occupancy data.
+    Async implementation: Collect 4.5 minutes of occupancy data.
 
-    This function collects for the full 5-minute window, then returns
-    quickly to avoid blocking the next leap-frog function. While this
-    function runs 22:00-22:05, websocket_listener_odd is idle.
+    This function collects for 4.5 minutes to leave headroom for the
+    blob write before Azure's function timeout. While this function
+    runs 22:00-22:04:30, websocket_listener_odd is idle.
     When this returns at 22:05, websocket_listener_odd fires at 22:05
     and collects 22:05-22:10, so there's no gap and no overlap.
     """
@@ -82,15 +83,16 @@ async def _async_main(mytimer: func.TimerRequest) -> None:
         # Import WebSocketListener here (lazy load) to avoid init-time issues
         from .websocket_handler import WebSocketListener
 
-        # Collect for full 5 minutes (300 seconds)
+        # Collect for 4.5 minutes (270s), leaving 30s for blob write
+        # within the 5-minute Azure timeout window
         listener = WebSocketListener(
-            url=websocket_url, target_uid=target_uid, duration_seconds=300
+            url=websocket_url, target_uid=target_uid, duration_seconds=270
         )
         updates = await listener.collect_updates()
 
         elapsed = time.time() - start_time
         logger.info(
-            f"[EVEN] Collected {len(updates)} updates in 5-minute window "
+            f"[EVEN] Collected {len(updates)} updates in 4.5-minute window "
             f"(actual time: {elapsed:.1f}s)"
         )
 
@@ -122,7 +124,7 @@ async def _async_main(mytimer: func.TimerRequest) -> None:
                 )
         else:
             logger.warning(
-                "[EVEN] No updates received in 5-minute window"
+                "[EVEN] No updates received in 4.5-minute window"
             )
 
     except Exception as e:
