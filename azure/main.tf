@@ -118,6 +118,18 @@ resource "azurerm_function_app_flex_consumption" "function_app" {
   maximum_instance_count = 40
   instance_memory_in_mb  = 2048
 
+  # Always-ready instance for timer triggers — without this, Flex Consumption
+  # may not wake up in time to fire timer triggers reliably.
+  always_ready {
+    name           = "function:websocket_listener_even"
+    instance_count = 1
+  }
+
+  always_ready {
+    name           = "function:websocket_listener_odd"
+    instance_count = 1
+  }
+
   site_config {
     application_insights_key = azurerm_application_insights.app_insights.instrumentation_key
   }
