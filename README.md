@@ -1,5 +1,7 @@
 # Badi Oerlikon Occupancy Monitor
 
+[![Deployment](https://github.com/rworreby/badi_oerlikon_attendence/actions/workflows/main_badi-oerlikon-func-01.yml/badge.svg?branch=main)](https://github.com/rworreby/badi_oerlikon_attendence/actions/workflows/main_badi-oerlikon-func-01.yml)
+
 Real-time occupancy monitoring for Badi Oerlikon swimming pool using WebSocket data collection on Azure Functions.
 
 ## What It Does
