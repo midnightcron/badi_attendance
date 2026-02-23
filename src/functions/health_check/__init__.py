@@ -3,7 +3,7 @@
 import azure.functions as func
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
@@ -11,7 +11,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     
     response_data = {
         "status": "healthy",
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "function": "health_check",
         "environment": {
             "WEBSOCKET_URL": os.getenv("WEBSOCKET_URL", "not set"),

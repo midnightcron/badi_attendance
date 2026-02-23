@@ -7,7 +7,7 @@ Connects to CrowdMonitor WebSocket API and collects occupancy updates.
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class WebSocketListener:
@@ -51,7 +51,7 @@ class WebSocketListener:
         import websockets
         
         updates = []
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         
         try:
             async with websockets.connect(self.url) as websocket:
@@ -62,7 +62,7 @@ class WebSocketListener:
                 self.logger.info("Sent 'all' command to WebSocket")
                 
                 while True:
-                    elapsed = (datetime.utcnow() - start_time).total_seconds()
+                    elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
                     
                     if elapsed >= self.duration_seconds:
                         self.logger.info(
@@ -161,7 +161,7 @@ class WebSocketListener:
                     
                     return {
                         'occupancy': int(float(occupancy)),
-                        'timestamp': datetime.utcnow().isoformat()
+                        'timestamp': datetime.now(timezone.utc).isoformat()
                     }
             
             # Target UID not found in this message (not an error,

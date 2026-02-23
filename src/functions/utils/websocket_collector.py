@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 import azure.functions as func
 
@@ -43,7 +43,7 @@ async def _async_collect(label: str, mytimer: func.TimerRequest) -> None:
     """
     tag = label.upper()
     logger = logging.getLogger(f"websocket_listener_{label}")
-    window_start = datetime.utcnow()
+    window_start = datetime.now(timezone.utc)
     start_time = time.time()
 
     if mytimer.past_due:

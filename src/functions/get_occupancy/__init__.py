@@ -13,7 +13,7 @@ import io
 import json
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger("get_occupancy")
 
@@ -54,7 +54,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                     status_code=400,
                 )
         else:
-            end_date = datetime.utcnow()
+            end_date = datetime.now(timezone.utc).replace(tzinfo=None)
             start_date = end_date - timedelta(days=days)
 
         # Read data from blobs
