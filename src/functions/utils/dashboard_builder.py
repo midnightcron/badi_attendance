@@ -13,11 +13,15 @@ import logging
 import os
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 logger = logging.getLogger("dashboard_builder")
+
+# Zurich timezone for display (automatically handles CET / CEST)
+_TZ_ZURICH = ZoneInfo("Europe/Zurich")
 
 # Day-of-week names (Monday=0)
 _DOW_NAMES = [
@@ -122,7 +126,11 @@ def _fetch_readings(lookback_days: int) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def _parse_readings(readings: list[dict]) -> list[tuple[datetime, int]]:
-    """Convert raw dicts to (datetime, occupancy) tuples."""
+    """Convert raw dicts to (datetime, occupancy) tuples in Zurich local time.
+
+    Stored timestamps are UTC.  We convert to Europe/Zurich so that
+    hour-of-day grouping, heatmaps, and predictions reflect local time.
+    """
     result = []
     for r in readings:
         ts_str = r["timestamp"]
@@ -131,7 +139,11 @@ def _parse_readings(readings: list[dict]) -> list[tuple[datetime, int]]:
                 dt = datetime.strptime(ts_str, "%Y-%m-%dT%H:%M:%S.%f")
             else:
                 dt = datetime.strptime(ts_str, "%Y-%m-%dT%H:%M:%S")
-            result.append((dt, r["occupancy"]))
+            # UTC → Zurich, then strip tzinfo so downstream code stays simple
+            dt_local = (dt.replace(tzinfo=timezone.utc)
+                        .astimezone(_TZ_ZURICH)
+                        .replace(tzinfo=None))
+            result.append((dt_local, r["occupancy"]))
         except ValueError:
             continue
     return result
@@ -145,7 +157,7 @@ def _chart_recent_timeline(
     parsed: list[tuple[datetime, int]], days: int = 7,
 ) -> go.Figure:
     """Line chart of raw occupancy over the last N days."""
-    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
+    cutoff = datetime.now(_TZ_ZURICH).replace(tzinfo=None) - timedelta(days=days)
     recent = [(dt, occ) for dt, occ in parsed if dt >= cutoff]
 
     if not recent:
@@ -297,7 +309,7 @@ def _chart_prediction(parsed: list[tuple[datetime, int]]) -> go.Figure:
     """
     import math
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(_TZ_ZURICH)
     today_dow = now.weekday()
     tomorrow_dow = (today_dow + 1) % 7
 
@@ -398,7 +410,7 @@ def _assemble_page(
         ))
         include_js = False
 
-    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now_str = datetime.now(_TZ_ZURICH).strftime("%Y-%m-%d %H:%M %Z")
 
     return f"""<!DOCTYPE html>
 <html lang="en">
