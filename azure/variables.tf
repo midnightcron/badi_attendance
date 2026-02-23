@@ -20,3 +20,8 @@ variable "environment" {
     error_message = "Environment must be dev, staging, or prod."
   }
 }
+
+variable "subscription_id" {
+  description = "Azure subscription ID"
+  type        = string
+}

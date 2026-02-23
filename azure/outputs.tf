@@ -11,7 +11,7 @@ output "storage_account_key" {
 
 output "function_app_name" {
   description = "Name of the function app"
-  value       = azurerm_function_app.function_app.name
+  value       = azurerm_function_app_flex_consumption.function_app.name
 }
 
 output "app_insights_key" {
