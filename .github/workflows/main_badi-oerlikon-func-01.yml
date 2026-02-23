@@ -84,16 +84,6 @@ jobs:
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_0DEA1B9CA7344396AB84F0EA87E6F4E5 }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_34DB6AE736D945BE86084A84EA297B59 }}
 
-      - name: Set app settings for remote build
-        uses: azure/appservice-settings@v1
-        with:
-          app-name: 'badi-oerlikon-dev-func'
-          app-settings-json: |
-            [
-              { "name": "ENABLE_ORYX_BUILD", "value": "true" },
-              { "name": "SCM_DO_BUILD_DURING_DEPLOYMENT", "value": "true" }
-            ]
-
       - name: 'Deploy to Azure Functions'
         uses: Azure/functions-action@v1
         id: deploy-to-function
@@ -101,6 +91,4 @@ jobs:
           app-name: 'badi-oerlikon-dev-func'
           slot-name: 'Production'
           package: deploy
-          scm-do-build-during-deployment: true
-          enable-oryx-build: true
           
