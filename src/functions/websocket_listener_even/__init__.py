@@ -135,23 +135,30 @@ async def _write_to_blob(logger, updates, window_start, label):
     """Write occupancy readings to blob storage as CSV."""
     try:
         # Local import to avoid module-level dependency issues
-        from azure.storage.blob import BlobClient
-        
-        # Get blob storage connection details
-        conn_str = os.getenv("AzureWebJobsStorage")
+        from azure.storage.blob import BlobServiceClient
+
+        # Use AZURE_STORAGE_CONNECTION_STRING (real conn string)
+        # Fall back to AzureWebJobsStorage only if it's a real connection string
+        conn_str = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+        if not conn_str:
+            aws = os.getenv("AzureWebJobsStorage", "")
+            if aws and aws != "UseDevelopmentStorage=true":
+                conn_str = aws
+
         container_name = os.getenv(
             "BLOB_CONTAINER_NAME", "occupancy-data"
         )
 
         if not conn_str:
             logger.warning(
-                f"[{label.upper()}] AzureWebJobsStorage not configured, "
-                f"skipping blob write"
+                f"[{label.upper()}] No storage connection string configured, "
+                f"skipping blob write. Set AZURE_STORAGE_CONNECTION_STRING."
             )
             return
 
-        # Generate blob name: occupancy_2026-02-19_10_00.csv
-        blob_name = window_start.strftime("occupancy_%Y-%m-%d_%H_%M.csv")
+        # Generate blob name: YYYY-MM-DD/HH-MM.csv (organized by date)
+        date_folder = window_start.strftime("%Y-%m-%d")
+        blob_name = f"{date_folder}/{window_start.strftime('occupancy_%H_%M.csv')}"
 
         # Build CSV content: timestamp,occupancy
         csv_lines = ["timestamp,occupancy"]
@@ -162,15 +169,21 @@ async def _write_to_blob(logger, updates, window_start, label):
 
         csv_content = "\n".join(csv_lines)
 
-        # Write to blob
-        blob_client = BlobClient.from_connection_string(
-            conn_str, container_name, blob_name
-        )
+        # Create container if it doesn't exist, then upload
+        blob_service_client = BlobServiceClient.from_connection_string(conn_str)
+        container_client = blob_service_client.get_container_client(container_name)
+        try:
+            container_client.create_container()
+            logger.info(f"[{label.upper()}] Created container: {container_name}")
+        except Exception:
+            pass  # Container already exists
+
+        blob_client = container_client.get_blob_client(blob_name)
         blob_client.upload_blob(csv_content, overwrite=True)
 
         logger.info(
             f"[{label.upper()}] Wrote {len(updates)} occupancy readings "
-            f"to blob: {blob_name}"
+            f"to blob: {container_name}/{blob_name}"
         )
 
     except Exception as e:
