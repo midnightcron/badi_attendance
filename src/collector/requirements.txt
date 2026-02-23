@@ -2,5 +2,4 @@ azure-functions
 azure-storage-blob>=12.18.0
 azure-identity>=1.14.0
 websockets>=11.0.3
-plotly>=5.18.0
 python-dotenv>=1.0.0

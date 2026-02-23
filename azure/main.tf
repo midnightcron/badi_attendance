@@ -97,29 +97,29 @@ resource "azurerm_service_plan" "function_plan" {
   sku_name            = "FC1"
 }
 
-# Function App — Flex Consumption
-resource "azurerm_function_app_flex_consumption" "function_app" {
-  name                = "${local.project_name}-${local.environment}-func"
+# --------------------------------------------------------------------------
+# Function App 1: Collector (timer triggers — websocket listeners)
+# --------------------------------------------------------------------------
+# Deployed independently from the API so that dashboard changes never
+# restart the always-ready collector instances.
+resource "azurerm_function_app_flex_consumption" "collector" {
+  name                = "${local.project_name}-${local.environment}-collector"
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
   service_plan_id     = azurerm_service_plan.function_plan.id
 
-  # Runtime
   runtime_name    = "python"
   runtime_version = "3.11"
 
-  # Storage — use the function storage account with blob container deployment
   storage_authentication_type = "StorageAccountConnectionString"
   storage_access_key          = azurerm_storage_account.function_storage.primary_access_key
   storage_container_type      = "blobContainer"
-  storage_container_endpoint  = "${azurerm_storage_account.function_storage.primary_blob_endpoint}app-package-container"
+  storage_container_endpoint  = "${azurerm_storage_account.function_storage.primary_blob_endpoint}collector-package"
 
-  # Flex Consumption settings
   maximum_instance_count = 40
   instance_memory_in_mb  = 2048
 
-  # Always-ready instance for timer triggers — without this, Flex Consumption
-  # may not wake up in time to fire timer triggers reliably.
+  # Always-ready instances — timer triggers must fire reliably.
   always_ready {
     name           = "function:websocket_listener_even"
     instance_count = 1
@@ -141,6 +141,40 @@ resource "azurerm_function_app_flex_consumption" "function_app" {
     BLOB_CONTAINER_NAME             = "occupancy-data"
     WEBSOCKET_URL                   = "wss://badi-public.crowdmonitor.ch:9591/api"
     TARGET_UID                      = "SSD-7"
+    AzureWebJobsStorage             = azurerm_storage_account.function_storage.primary_connection_string
+  }
+}
+
+# --------------------------------------------------------------------------
+# Function App 2: API (HTTP triggers — dashboard, occupancy, health)
+# --------------------------------------------------------------------------
+# Can be deployed freely without affecting collector uptime.
+resource "azurerm_function_app_flex_consumption" "api" {
+  name                = "${local.project_name}-${local.environment}-api"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  service_plan_id     = azurerm_service_plan.function_plan.id
+
+  runtime_name    = "python"
+  runtime_version = "3.11"
+
+  storage_authentication_type = "StorageAccountConnectionString"
+  storage_access_key          = azurerm_storage_account.function_storage.primary_access_key
+  storage_container_type      = "blobContainer"
+  storage_container_endpoint  = "${azurerm_storage_account.function_storage.primary_blob_endpoint}api-package"
+
+  maximum_instance_count = 40
+  instance_memory_in_mb  = 2048
+
+  site_config {
+    application_insights_key = azurerm_application_insights.app_insights.instrumentation_key
+  }
+
+  app_settings = {
+    AZURE_STORAGE_ACCOUNT_NAME      = azurerm_storage_account.storage.name
+    AZURE_STORAGE_ACCOUNT_KEY       = azurerm_storage_account.storage.primary_access_key
+    AZURE_STORAGE_CONNECTION_STRING = azurerm_storage_account.storage.primary_connection_string
+    BLOB_CONTAINER_NAME             = "occupancy-data"
     AzureWebJobsStorage             = azurerm_storage_account.function_storage.primary_connection_string
   }
 }

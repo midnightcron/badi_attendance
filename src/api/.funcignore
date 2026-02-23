@@ -1,0 +1,6 @@
+.venv
+.build*
+.python_packages
+deploy/
+*.zip
+__pycache__

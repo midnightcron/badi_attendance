@@ -9,9 +9,19 @@ output "storage_account_key" {
   sensitive   = true
 }
 
-output "function_app_name" {
-  description = "Name of the function app"
-  value       = azurerm_function_app_flex_consumption.function_app.name
+output "collector_app_name" {
+  description = "Name of the collector function app (timer triggers)"
+  value       = azurerm_function_app_flex_consumption.collector.name
+}
+
+output "api_app_name" {
+  description = "Name of the API function app (HTTP triggers)"
+  value       = azurerm_function_app_flex_consumption.api.name
+}
+
+output "dashboard_url" {
+  description = "URL of the occupancy dashboard"
+  value       = "https://${azurerm_function_app_flex_consumption.api.default_hostname}/api/dashboard"
 }
 
 output "app_insights_key" {

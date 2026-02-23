@@ -58,14 +58,15 @@ terraform apply   # Deploy resources
 
 This creates:
 - Resource Group (`badi-oerlikon-dev-rg`)
-- Function App on Flex Consumption (FC1) with Python 3.11
+- Two Function Apps on Flex Consumption (FC1) with Python 3.11:
+  - **Collector** — WebSocket timer triggers with always-ready instances
+  - **API** — Dashboard and HTTP endpoints (scales to zero)
 - Two Storage Accounts (data + function runtime)
 - Application Insights
-- Always-ready instances for both timer functions
 
 ### 2. Deploy Code
 
-Push to `main` — GitHub Actions builds and deploys automatically:
+Push to `main` — GitHub Actions deploys only the apps whose code changed:
 
 ```bash
 git push origin main
@@ -74,40 +75,52 @@ git push origin main
 Or deploy manually:
 
 ```bash
-cd src/functions
-zip -r ../../release.zip . -x '__pycache__/*' '*.pyc' 'deploy/*'
+# Deploy collector
+cd src/collector
+zip -r ../../collector.zip . -x '__pycache__/*' '*.pyc'
 az functionapp deployment source config-zip \
   --resource-group badi-oerlikon-dev-rg \
-  --name badi-oerlikon-dev-func \
-  --src ../../release.zip
+  --name badi-oerlikon-dev-collector \
+  --src ../../collector.zip
+
+# Deploy API
+cd ../api
+zip -r ../../api.zip . -x '__pycache__/*' '*.pyc'
+az functionapp deployment source config-zip \
+  --resource-group badi-oerlikon-dev-rg \
+  --name badi-oerlikon-dev-api \
+  --src ../../api.zip
 ```
 
 ### 3. Verify Deployment
 
 ```bash
-# Health check
-curl https://badi-oerlikon-dev-func.azurewebsites.net/api/health_check
+# Health check (API app)
+curl https://badi-oerlikon-dev-api.azurewebsites.net/api/health_check
 
-# Dashboard
-open https://badi-oerlikon-dev-func.azurewebsites.net/api/dashboard
+# Dashboard (API app)
+open https://badi-oerlikon-dev-api.azurewebsites.net/api/dashboard
 
-# Query data
-curl "https://badi-oerlikon-dev-func.azurewebsites.net/api/occupancy?days=1"
+# Query data (API app)
+curl "https://badi-oerlikon-dev-api.azurewebsites.net/api/occupancy?days=1"
 ```
 
 ### 4. Monitor
 
-- **Application Insights** — traces, exceptions, live metrics
+- **Application Insights** — traces, exceptions, live metrics (shared by both apps)
 - **Blob Storage** — check `occupancy-data` container for new CSV files every 5 minutes
-- **Function App logs** — `az functionapp log tail -g badi-oerlikon-dev-rg -n badi-oerlikon-dev-func`
+- **Function App logs:**
+  - `az functionapp log tail -g badi-oerlikon-dev-rg -n badi-oerlikon-dev-collector`
+  - `az functionapp log tail -g badi-oerlikon-dev-rg -n badi-oerlikon-dev-api`
 
 ## Project Layout
 
 | Path | Purpose |
 |------|---------|
-| `src/functions/` | Azure Functions application |
+| `src/collector/` | Timer-triggered WebSocket data collection |
+| `src/api/` | HTTP endpoints: dashboard, occupancy API, health |
 | `azure/` | Terraform infrastructure code |
-| `.github/workflows/` | CI/CD pipeline |
+| `.github/workflows/` | CI/CD pipelines (one per app, path-filtered) |
 | `docker-compose.functions.yml` | Local development environment |
 | `docs/` | Extended documentation |
 
@@ -122,5 +135,5 @@ Verify `AZURE_STORAGE_CONNECTION_STRING` is set. Check function logs for `"No st
 ### WebSocket connection fails
 The API at `wss://badi-public.crowdmonitor.ch:9591/api` must be reachable. Test with:
 ```bash
-python scripts/scrape_websocket.py
+python tests/test_websocket_connectivity.py
 ```

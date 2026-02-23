@@ -2,14 +2,24 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Attach to Python Functions",
+            "name": "Attach to Collector Functions",
             "type": "debugpy",
             "request": "attach",
             "connect": {
                 "host": "localhost",
                 "port": 9091
             },
-            "preLaunchTask": "func: host start"
+            "preLaunchTask": "func: host start (collector)"
+        },
+        {
+            "name": "Attach to API Functions",
+            "type": "debugpy",
+            "request": "attach",
+            "connect": {
+                "host": "localhost",
+                "port": 9091
+            },
+            "preLaunchTask": "func: host start (api)"
         }
     ]
 }

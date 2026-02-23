@@ -3,26 +3,27 @@
 	"tasks": [
 		{
 			"type": "func",
-			"label": "func: host start",
+			"label": "func: host start (collector)",
 			"command": "host start",
 			"problemMatcher": "$func-python-watch",
 			"isBackground": true,
-			"dependsOn": "func: extensions install",
+			"dependsOn": "func: extensions install (collector)",
 			"options": {
-				"cwd": "${workspaceFolder}/src/functions"
+				"cwd": "${workspaceFolder}/src/collector"
 			}
 		},
 		{
 			"type": "func",
+			"label": "func: extensions install (collector)",
 			"command": "extensions install",
-			"dependsOn": "pip install (functions)",
+			"dependsOn": "pip install (collector)",
 			"problemMatcher": [],
 			"options": {
-				"cwd": "${workspaceFolder}/src/functions"
+				"cwd": "${workspaceFolder}/src/collector"
 			}
 		},
 		{
-			"label": "pip install (functions)",
+			"label": "pip install (collector)",
 			"type": "shell",
 			"osx": {
 				"command": "${config:azureFunctions.pythonVenv}/bin/python -m pip install -r requirements.txt"
@@ -35,7 +36,45 @@
 			},
 			"problemMatcher": [],
 			"options": {
-				"cwd": "${workspaceFolder}/src/functions"
+				"cwd": "${workspaceFolder}/src/collector"
+			}
+		},
+		{
+			"type": "func",
+			"label": "func: host start (api)",
+			"command": "host start",
+			"problemMatcher": "$func-python-watch",
+			"isBackground": true,
+			"dependsOn": "func: extensions install (api)",
+			"options": {
+				"cwd": "${workspaceFolder}/src/api"
+			}
+		},
+		{
+			"type": "func",
+			"label": "func: extensions install (api)",
+			"command": "extensions install",
+			"dependsOn": "pip install (api)",
+			"problemMatcher": [],
+			"options": {
+				"cwd": "${workspaceFolder}/src/api"
+			}
+		},
+		{
+			"label": "pip install (api)",
+			"type": "shell",
+			"osx": {
+				"command": "${config:azureFunctions.pythonVenv}/bin/python -m pip install -r requirements.txt"
+			},
+			"windows": {
+				"command": "${config:azureFunctions.pythonVenv}\\Scripts\\python -m pip install -r requirements.txt"
+			},
+			"linux": {
+				"command": "${config:azureFunctions.pythonVenv}/bin/python -m pip install -r requirements.txt"
+			},
+			"problemMatcher": [],
+			"options": {
+				"cwd": "${workspaceFolder}/src/api"
 			}
 		}
 	]

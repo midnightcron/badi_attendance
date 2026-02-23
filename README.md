@@ -1,6 +1,7 @@
 # Badi Oerlikon Occupancy Monitor
 
-[![Deployment](https://github.com/rworreby/badi_oerlikon_attendence/actions/workflows/main_badi-oerlikon-func-01.yml/badge.svg?branch=main)](https://github.com/rworreby/badi_oerlikon_attendence/actions/workflows/main_badi-oerlikon-func-01.yml)
+[![Collector Deploy](https://github.com/rworreby/badi_oerlikon_attendence/actions/workflows/deploy-collector.yml/badge.svg?branch=main)](https://github.com/rworreby/badi_oerlikon_attendence/actions/workflows/deploy-collector.yml)
+[![API Deploy](https://github.com/rworreby/badi_oerlikon_attendence/actions/workflows/deploy-api.yml/badge.svg?branch=main)](https://github.com/rworreby/badi_oerlikon_attendence/actions/workflows/deploy-api.yml)
 
 Real-time occupancy monitoring for Badi Oerlikon swimming pool using WebSocket data collection on Azure Functions.
 
@@ -14,7 +15,18 @@ Real-time occupancy monitoring for Badi Oerlikon swimming pool using WebSocket d
 
 ## Architecture
 
-Two timer-triggered Azure Functions run a **leap-frog pattern** to achieve continuous 5-minute collection windows without overlap:
+The system is split into **two independent Azure Function Apps** so that dashboard
+development never interrupts the data collectors:
+
+| App | Functions | Deploys when |
+|-----|-----------|--------------|
+| **Collector** (`badi-oerlikon-dev-collector`) | `websocket_listener_even`, `websocket_listener_odd` | `src/collector/**` changes |
+| **API** (`badi-oerlikon-dev-api`) | `serve_dashboard`, `get_occupancy`, `health_check` | `src/api/**` changes |
+
+Both share the same blob storage account and App Insights instance. The
+collector has `always_ready` instances; the API scales to zero when idle.
+
+**Leap-frog collection pattern:**
 
 ```
 Time:   :00   :05   :10   :15   :20   :25   :30
@@ -26,37 +38,43 @@ Each function collects for 298 seconds (just under 5 minutes), then hands off to
 
 **Infrastructure:**
 - **Runtime:** Azure Functions, Python 3.11, v1 programming model
-- **Plan:** Flex Consumption (FC1) with `always_ready` instances for both timer functions
+- **Plan:** Flex Consumption (FC1) — shared service plan, two apps
 - **Storage:** Azure Blob Storage (CSV files in `occupancy-data/YYYY-MM-DD/occupancy_HH_MM.csv`)
 - **IaC:** Terraform (azurerm ~4.0)
-- **CI/CD:** GitHub Actions (zip deploy on push to `main`)
+- **CI/CD:** GitHub Actions — separate path-filtered workflows per app
 
 ## Project Structure
 
 ```
 badi_oerlikon_attendence/
-├── src/functions/                      # Azure Functions app root
-│   ├── websocket_listener_even/        # Timer: :00, :10, :20, :30, :40, :50
-│   ├── websocket_listener_odd/         # Timer: :05, :15, :25, :35, :45, :55
-│   ├── get_occupancy/                  # HTTP API: GET /api/occupancy
-│   ├── serve_dashboard/                # HTTP: GET /api/dashboard
-│   ├── health_check/                   # HTTP: GET /api/health_check
-│   ├── utils/                          # Shared modules
-│   │   ├── websocket_collector.py      # Collection + stats + blob write
-│   │   ├── websocket_handler.py        # WebSocketListener class
-│   │   ├── dashboard_builder.py        # Plotly chart generation (pure Python)
-│   │   └── logger.py                   # Logging config
-│   ├── host.json                       # Function host config (10-min timeout)
-│   └── requirements.txt                # Python dependencies
+├── src/
+│   ├── collector/                      # Function App 1: data collection (timer triggers)
+│   │   ├── websocket_listener_even/    # Timer: :00, :10, :20, :30, :40, :50
+│   │   ├── websocket_listener_odd/     # Timer: :05, :15, :25, :35, :45, :55
+│   │   ├── utils/                      # Shared modules
+│   │   │   ├── websocket_collector.py  # Collection + stats + blob write
+│   │   │   └── websocket_handler.py    # WebSocketListener class
+│   │   ├── host.json                   # 10-min function timeout
+│   │   └── requirements.txt            # websockets, azure-storage-blob, …
+│   │
+│   └── api/                            # Function App 2: HTTP endpoints
+│       ├── serve_dashboard/            # HTTP: GET /api/dashboard (Plotly)
+│       ├── get_occupancy/              # HTTP: GET /api/occupancy (JSON API)
+│       ├── health_check/               # HTTP: GET /api/health_check
+│       ├── utils/
+│       │   └── dashboard_builder.py    # Plotly chart generation (pure Python)
+│       ├── host.json
+│       └── requirements.txt            # plotly, azure-storage-blob, …
 │
 ├── azure/                              # Terraform infrastructure
-│   ├── main.tf                         # Function App, Storage, App Insights
+│   ├── main.tf                         # Two Function Apps, Storage, App Insights
 │   ├── variables.tf                    # Input variables
 │   ├── outputs.tf                      # Terraform outputs
 │   └── terraform.tfvars                # Variable values
 │
-├── .github/workflows/                  # CI/CD
-│   └── main_badi-oerlikon-func-01.yml  # Build + deploy to Azure Functions
+├── .github/workflows/                  # CI/CD (path-filtered)
+│   ├── deploy-collector.yml            # Deploys only on src/collector/** changes
+│   └── deploy-api.yml                  # Deploys only on src/api/** changes
 │
 ├── tests/                              # Manual test scripts
 │   └── test_websocket_connectivity.py  # Quick CrowdMonitor WebSocket check

@@ -13,23 +13,38 @@ services:
     volumes:
       - azurite_data:/data
 
-  # Python Functions Runtime
-  functions:
+  # Collector — WebSocket timer triggers
+  collector:
+    image: mcr.microsoft.com/azure-functions/python:4-python3.11
+    depends_on:
+      - azurite
+    volumes:
+      - ./src/collector:/home/site/wwwroot
+    environment:
+      AzureWebJobsStorage: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=SkeyBk5sNzUtNTcxNGQzOTdjMDUyNDQ=;BlobEndpoint=http://azurite:10000/devstoreaccount1;"
+      FUNCTIONS_WORKER_RUNTIME: python
+      FUNCTIONS_EXTENSION_VERSION: "~4"
+      AZURE_STORAGE_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=SkeyBk5sNzUtNTcxNGQzOTdjMDUyNDQ=;BlobEndpoint=http://azurite:10000/devstoreaccount1;"
+      BLOB_CONTAINER_NAME: occupancy-data
+      WEBSOCKET_URL: "wss://badi-public.crowdmonitor.ch:9591/api"
+      TARGET_UID: "SSD-7"
+      PYTHONPATH: "/home/site/wwwroot"
+
+  # API — Dashboard and HTTP endpoints
+  api:
     image: mcr.microsoft.com/azure-functions/python:4-python3.11
     ports:
       - "7071:80"
     depends_on:
       - azurite
     volumes:
-      - ./src/functions:/home/site/wwwroot
+      - ./src/api:/home/site/wwwroot
     environment:
       AzureWebJobsStorage: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=SkeyBk5sNzUtNTcxNGQzOTdjMDUyNDQ=;BlobEndpoint=http://azurite:10000/devstoreaccount1;"
       FUNCTIONS_WORKER_RUNTIME: python
       FUNCTIONS_EXTENSION_VERSION: "~4"
       AZURE_STORAGE_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=SkeyBk5sNzUtNTcxNGQzOTdjMDUyNDQ=;BlobEndpoint=http://azurite:10000/devstoreaccount1;"
-      BLOB_CONTAINER_NAME: scraped-data
-      WEBSOCKET_URL: "wss://badi-public.crowdmonitor.ch:9591/api"
-      TARGET_UID: "SSD-7"
+      BLOB_CONTAINER_NAME: occupancy-data
       ASPNETCORE_URLS: "http://+:80"
       PYTHONPATH: "/home/site/wwwroot"
 
