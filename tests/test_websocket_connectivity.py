@@ -1,7 +1,11 @@
-# ...existing code...
 """
-Fetch visitor count by connecting to the crowdmonitor WebSocket.
+Quick connectivity test for the CrowdMonitor WebSocket API.
+
+Connects, sends "all", and prints the current occupancy for SSD-7.
 Requires: pip install websocket-client
+
+Usage:
+    python tests/test_websocket_connectivity.py
 """
 import json
 from websocket import create_connection, WebSocketTimeoutException
@@ -35,4 +39,3 @@ if __name__ == "__main__":
         fetch_once()
     except WebSocketTimeoutException:
         print("WebSocket timeout")
-# ...existing code...

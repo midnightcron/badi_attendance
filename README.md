@@ -56,7 +56,8 @@ badi_oerlikon_attendence/
 ├── .github/workflows/                  # CI/CD
 │   └── main_badi-oerlikon-func-01.yml  # Build + deploy to Azure Functions
 │
-├── scripts/scrape_websocket.py         # Standalone WebSocket debug script
+├── tests/                              # Manual test scripts
+│   └── test_websocket_connectivity.py  # Quick CrowdMonitor WebSocket check
 ├── docker-compose.functions.yml        # Local dev (Azurite + Functions runtime)
 ├── pyproject.toml                      # Project metadata
 └── docs/                               # Extended documentation
