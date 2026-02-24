@@ -52,15 +52,34 @@ class WebSocketListener:
         
         updates = []
         start_time = datetime.now(timezone.utc)
+        websocket = None
         
         try:
-            async with websockets.connect(self.url) as websocket:
-                self.logger.info(f"Connected to WebSocket: {self.url}")
-                
+            websocket = await websockets.connect(self.url)
+            self.logger.info(f"Connected to WebSocket: {self.url}")
+            
+            try:
                 # Send the "all" command (API expects this)
                 await websocket.send("all")
                 self.logger.info("Sent 'all' command to WebSocket")
                 
+                # Receive first message quickly (initial burst of data after connect)
+                try:
+                    first_msg = await asyncio.wait_for(
+                        websocket.recv(),
+                        timeout=2.0  # Allow 2 sec for initial connect overhead
+                    )
+                    data = self._parse_message(first_msg)
+                    if data:
+                        updates.append(data)
+                        self.logger.debug(
+                            f"Update 1 (initial): occupancy={data['occupancy']} "
+                            f"at {data['timestamp']}"
+                        )
+                except asyncio.TimeoutError:
+                    self.logger.warning("No initial message within 2s")
+                
+                # Continue collecting for the full duration
                 while True:
                     elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
                     
@@ -102,6 +121,19 @@ class WebSocketListener:
                     except Exception as e:
                         self.logger.warning(f"Error processing message: {e}")
                         continue
+            
+            finally:
+                # Explicit close with FIN handshake to release server-side session
+                if websocket:
+                    self.logger.info(
+                        f"Closing WebSocket. Collected {len(updates)} updates."
+                    )
+                    try:
+                        await websocket.close()
+                        # Give the server time to process the close frame
+                        await asyncio.sleep(0.5)
+                    except Exception as close_err:
+                        self.logger.debug(f"Cleanup: {close_err}")
         
         except asyncio.TimeoutError:
             self.logger.error("WebSocket connection timeout")

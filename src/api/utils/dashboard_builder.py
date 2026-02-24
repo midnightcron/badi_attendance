@@ -229,7 +229,7 @@ def _chart_timeline(data: list[tuple[datetime, int]]) -> go.Figure:
             ))
             cur += timedelta(days=1)
 
-    # Default x-range: last 7 days
+    # Default x-range: last 7 days (with 1-hour buffer into future for padding)
     now = datetime.now(_TZ).replace(tzinfo=None)
     fig.update_layout(**_base(
         height=380,
@@ -239,7 +239,7 @@ def _chart_timeline(data: list[tuple[datetime, int]]) -> go.Figure:
             type="date", gridcolor=_GRID,
             range=[
                 (now - timedelta(days=7)).isoformat(),
-                (now + timedelta(minutes=30)).isoformat(),
+                (now + timedelta(hours=1)).isoformat(),
             ],
         ),
         yaxis=dict(title="People", gridcolor=_GRID),

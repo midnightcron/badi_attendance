@@ -67,10 +67,11 @@ async def _async_collect(label: str, mytimer: func.TimerRequest) -> None:
         # Lazy import to avoid init-time issues
         from utils.websocket_handler import WebSocketListener
 
-        # Collect for ~5 minutes (298 s). Slightly under 300 s to avoid
-        # capturing a duplicate data point at the leap-frog boundary.
+        # Collect for 5 minutes (296 s) to avoid duplicate points at boundaries.
+        # At hour boundaries (e.g., 23:55 → 23:58:56), this gives extra buffer
+        # for the previous function's connection to fully close on the server.
         listener = WebSocketListener(
-            url=websocket_url, target_uid=target_uid, duration_seconds=298
+            url=websocket_url, target_uid=target_uid, duration_seconds=296
         )
         updates = await listener.collect_updates()
 
