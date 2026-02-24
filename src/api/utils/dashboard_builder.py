@@ -180,11 +180,11 @@ def _parse(rows: list[dict]) -> list[tuple[datetime, int]]:
     for r in rows:
         s = r["timestamp"]
         try:
-            fmt = "%Y-%m-%dT%H:%M:%S.%f" if "." in s else "%Y-%m-%dT%H:%M:%S"
-            dt = datetime.strptime(s, fmt)
-            dt = (dt.replace(tzinfo=timezone.utc)
-                  .astimezone(_TZ)
-                  .replace(tzinfo=None))
+            # Use fromisoformat (Python 3.11+) — handles +00:00 offsets
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.astimezone(_TZ).replace(tzinfo=None)
             out.append((dt, r["occupancy"]))
         except ValueError:
             continue

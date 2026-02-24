@@ -180,17 +180,18 @@ def _aggregate(readings: list, minutes: int) -> list:
 
     for r in readings:
         try:
-            # Parse ISO timestamp (handle both with/without microseconds)
+            # Parse ISO timestamp (handles timezone offsets like +00:00)
             ts_str = r["timestamp"]
-            if "." in ts_str:
-                ts = datetime.strptime(ts_str, "%Y-%m-%dT%H:%M:%S.%f")
-            else:
-                ts = datetime.strptime(ts_str, "%Y-%m-%dT%H:%M:%S")
+            ts = datetime.fromisoformat(ts_str)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
 
             # Floor to bucket boundary
             epoch = ts.timestamp()
             bucket_epoch = (int(epoch) // bucket_seconds) * bucket_seconds
-            bucket_key = datetime.utcfromtimestamp(bucket_epoch).isoformat()
+            bucket_key = datetime.fromtimestamp(
+                bucket_epoch, tz=timezone.utc
+            ).strftime("%Y-%m-%dT%H:%M:%S")
 
             if bucket_key not in buckets:
                 buckets[bucket_key] = []
