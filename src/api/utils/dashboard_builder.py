@@ -142,12 +142,15 @@ def _fetch_readings(lookback_days: int) -> list[dict]:
 
     rows: list[dict] = []
     today = datetime.now(timezone.utc).date()
+    loaded_days = []
 
     for offset in range(lookback_days + 1):
         day = today - timedelta(days=offset)
         prefix = day.strftime("%Y-%m-%d/")
+        found = False
         try:
             for blob in cc.list_blobs(name_starts_with=prefix):
+                found = True
                 try:
                     data = (cc.get_blob_client(blob.name)
                             .download_blob().readall().decode())
@@ -163,7 +166,10 @@ def _fetch_readings(lookback_days: int) -> list[dict]:
                     pass
         except Exception:
             pass
+        if found:
+            loaded_days.append(day.isoformat())
 
+    logger.info(f"Dashboard loaded data for days: {loaded_days}")
     rows.sort(key=lambda r: r["timestamp"])
     return rows
 
