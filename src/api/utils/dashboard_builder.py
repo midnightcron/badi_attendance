@@ -256,49 +256,170 @@ def _chart_timeline(data: list[tuple[datetime, int]]) -> go.Figure:
 # ── Chart 2 — Best time to visit ──────────────────────────────────────────
 
 def _chart_best_time(data: list[tuple[datetime, int]]) -> go.Figure:
-    """Bar chart — average occupancy per 15-min slot across all days."""
+    """
+    Bar chart with 4 views controlled by JS buttons:
 
+    Averaging modes:
+        Day-Average  — average over the same weekday (e.g. all Mondays)
+        Week-Average — average over every day of the week
+
+    Time intervals:
+        Day  — show today only, with the selected average overlaid
+        Week — show the full week average pattern
+
+    Returns a figure with 4 invisible traces; JS toggles visibility.
+    Also returns precomputed data dicts via _best_time_data() for the
+    HTML/JS layer.
+    """
+    # We produce a simple week-average figure here; the JS layer handles
+    # switching using precomputed JSON data injected into the page.
+    slots = _all_slots()
+    labels = [_slot(h, m) for h, m in slots]
+
+    # Week average: all days combined
+    week_avg = _compute_week_avg(data, slots)
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=labels, y=week_avg,
+        marker_color=_color_bars(week_avg),
+        hovertemplate="<b>%{x}</b><br>Avg: %{y} people<extra></extra>",
+    ))
+
+    # ── Best-time marker ──
+    _add_best_time_marker(fig, slots, labels, week_avg)
+
+    # ── Closing-time marker at 20:00 ──
+    fig.add_vline(
+        x="20:00", line_dash="dash", line_color=_WARN, line_width=1,
+    )
+    fig.add_annotation(
+        x="20:00", y=1.02, yref="paper",
+        text="Closes 20:00 (Mon/Tue/Thu)",
+        showarrow=False, font=dict(color=_WARN, size=9),
+    )
+
+    hticks = [_slot(h, 0) for h in range(_OPEN, _CLOSE + 1)]
+    fig.update_layout(**_base(
+        height=340,
+        showlegend=False,
+        xaxis=dict(
+            gridcolor=_GRID,
+            tickmode="array", tickvals=hticks, ticktext=hticks,
+        ),
+        yaxis=dict(title="Avg People", gridcolor=_GRID),
+    ))
+    return fig
+
+
+def _best_time_data(
+    data: list[tuple[datetime, int]],
+) -> dict:
+    """Precompute all 4 view combinations as JSON-serialisable dicts."""
+    now = datetime.now(_TZ).replace(tzinfo=None)
+    today_dow = now.weekday()
+
+    slots = _all_slots()
+    labels = [_slot(h, m) for h, m in slots]
+
+    # Per-weekday buckets
+    by_dow_slot: dict[int, dict[tuple[int, int], list[int]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    for dt, occ in data:
+        hm = _bin15(dt)
+        if _OPEN <= hm[0] < _CLOSE:
+            by_dow_slot[dt.weekday()][hm].append(occ)
+
+    # Week-average (all days)
+    week_by_slot: dict[tuple[int, int], list[int]] = defaultdict(list)
+    for dt, occ in data:
+        hm = _bin15(dt)
+        if _OPEN <= hm[0] < _CLOSE:
+            week_by_slot[hm].append(occ)
+
+    def _avg_list(slot_dict: dict, slots: list) -> list[float]:
+        out = []
+        for s in slots:
+            v = slot_dict.get(s, [])
+            out.append(round(sum(v) / len(v), 1) if v else 0)
+        return out
+
+    # 1. Week-Average + Week interval (all days averaged, full week)
+    week_avg_week = _avg_list(week_by_slot, slots)
+
+    # 2. Day-Average + Week interval (per-weekday, show all 7 days as subsets)
+    day_avg_week = {}
+    for dow in range(7):
+        day_avg_week[_DOW[dow]] = _avg_list(by_dow_slot[dow], slots)
+
+    # 3. Day-Average + Day interval (today's weekday average, today's hours)
+    day_avg_day = _avg_list(by_dow_slot[today_dow], slots)
+
+    # Today's actual data
+    today_date = now.date()
+    today_actual: dict[tuple[int, int], list[int]] = defaultdict(list)
+    for dt, occ in data:
+        if dt.date() == today_date:
+            hm = _bin15(dt)
+            if _OPEN <= hm[0] < _CLOSE:
+                today_actual[hm].append(occ)
+    today_vals = _avg_list(today_actual, slots)
+
+    return {
+        "labels": labels,
+        "today_dow": today_dow,
+        "today_name": _DOW[today_dow],
+        "today_vals": today_vals,
+        "week_avg": week_avg_week,
+        "day_avg_today": day_avg_day,
+        "day_avg_all": day_avg_week,
+    }
+
+
+def _compute_week_avg(
+    data: list[tuple[datetime, int]], slots: list[tuple[int, int]]
+) -> list[float]:
     by_slot: dict[tuple[int, int], list[int]] = defaultdict(list)
     for dt, occ in data:
         hm = _bin15(dt)
         if _OPEN <= hm[0] < _CLOSE:
             by_slot[hm].append(occ)
+    return [
+        round(sum(v) / len(v), 1) if (v := by_slot.get(s, [])) else 0
+        for s in slots
+    ]
 
-    slots = _all_slots()
-    labels = [_slot(h, m) for h, m in slots]
-    avgs = []
-    for s in slots:
-        v = by_slot.get(s, [])
-        avgs.append(round(sum(v) / len(v), 1) if v else 0)
 
-    # Colour bars green → yellow → red by relative occupancy
+def _color_bars(avgs: list[float]) -> list[str]:
+    """Colour bars green → yellow → red by relative occupancy."""
     positive = [a for a in avgs if a > 0]
-    if positive:
-        mn, mx = min(positive), max(positive)
-        rng = mx - mn or 1
-        colors = []
-        for a in avgs:
-            if a <= 0:
-                colors.append(_GRID)
-                continue
-            t = (a - mn) / rng
-            if t < 0.35:
-                colors.append(_GOOD)
-            elif t < 0.65:
-                colors.append(_WARN)
-            else:
-                colors.append(_BAD)
-    else:
-        colors = [_ACCENT] * len(slots)
+    if not positive:
+        return [_ACCENT] * len(avgs)
+    mn, mx = min(positive), max(positive)
+    rng = mx - mn or 1
+    colors = []
+    for a in avgs:
+        if a <= 0:
+            colors.append(_GRID)
+            continue
+        t = (a - mn) / rng
+        if t < 0.35:
+            colors.append(_GOOD)
+        elif t < 0.65:
+            colors.append(_WARN)
+        else:
+            colors.append(_BAD)
+    return colors
 
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=labels, y=avgs, marker_color=colors,
-        hovertemplate="<b>%{x}</b><br>Avg: %{y} people<extra></extra>",
-    ))
 
-    # ── Best-time marker — best 30-min swim window ──
-    # Only the *start* of the pair must be ≤ cutoff (last entry time).
+def _add_best_time_marker(
+    fig: go.Figure,
+    slots: list[tuple[int, int]],
+    labels: list[str],
+    avgs: list[float],
+) -> None:
+    """Annotate the best 30-min swim window."""
     slot_ok = [
         a > 0 and _is_open(0, *s)
         for s, a in zip(slots, avgs)
@@ -330,29 +451,6 @@ def _chart_best_time(data: list[tuple[datetime, int]]) -> go.Figure:
             bgcolor=f"rgba({_hex_rgb(_GOOD)},0.15)",
             bordercolor=_GOOD, borderwidth=1, borderpad=4,
         )
-
-    # ── Closing-time marker at 20:00 ──
-    fig.add_vline(
-        x="20:00", line_dash="dash", line_color=_WARN, line_width=1,
-    )
-    fig.add_annotation(
-        x="20:00", y=1.02, yref="paper",
-        text="Closes 20:00 (Mon/Tue/Thu)",
-        showarrow=False, font=dict(color=_WARN, size=9),
-    )
-
-    # Hourly ticks for readability
-    hticks = [_slot(h, 0) for h in range(_OPEN, _CLOSE + 1)]
-    fig.update_layout(**_base(
-        height=340,
-        showlegend=False,
-        xaxis=dict(
-            gridcolor=_GRID,
-            tickmode="array", tickvals=hticks, ticktext=hticks,
-        ),
-        yaxis=dict(title="Avg People", gridcolor=_GRID),
-    ))
-    return fig
 
 
 # ── Chart 3 — Heatmap ─────────────────────────────────────────────────────
@@ -523,6 +621,7 @@ def _assemble_page(
     n_readings: int,
     lookback_days: int,
     raw_data: list[tuple[datetime, int]] | None = None,
+    bt_data: dict | None = None,
 ) -> str:
     """Combine all charts into one dark-mode HTML page."""
 
@@ -575,6 +674,9 @@ def _assemble_page(
                     for dt, occ in raw_data])
         if raw_data else "[]"
     )
+
+    # Best-time precomputed data for JS toggles
+    bt_json = json.dumps(bt_data) if bt_data else "{}"
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -765,7 +867,17 @@ def _assemble_page(
       <div class="card-head">
         <div>
           <h2>Best Time to Visit</h2>
-          <span class="desc">15-min avg &middot; dashed = Mon/Tue/Thu close</span>
+          <span class="desc" id="bt-desc">Week average &middot; all days</span>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+          <div class="range-btns">
+            <button class="rbtn bt-avg active" onclick="setBtAvg('week')" data-m="week">Week-Avg</button>
+            <button class="rbtn bt-avg" onclick="setBtAvg('day')" data-m="day">Day-Avg</button>
+          </div>
+          <div class="range-btns">
+            <button class="rbtn bt-int" onclick="setBtInt('week')" data-i="week">Week</button>
+            <button class="rbtn bt-int active" onclick="setBtInt('day')" data-i="day">Today</button>
+          </div>
         </div>
       </div>
       {bt_html}
@@ -853,6 +965,117 @@ function setResolution(resMin) {{
   document.querySelectorAll('.res-btn').forEach(function(b){{b.classList.remove('active')}});
   if (event && event.currentTarget) event.currentTarget.classList.add('active');
 }}
+
+/* ── Best Time to Visit toggles ── */
+var _btData = {bt_json};
+var _btAvgMode = 'week';   // 'week' | 'day'
+var _btIntMode = 'day';    // 'week' | 'day'
+
+var _GOOD = '{_GOOD}', _WARN = '{_WARN}', _BAD = '{_BAD}', _GRID = '{_GRID}';
+var _ACCENT = '{_ACCENT}', _MUTED = '{_MUTED}';
+
+function _colorBars(avgs) {{
+  var pos = avgs.filter(function(a){{return a > 0}});
+  if (!pos.length) return avgs.map(function(){{return _ACCENT}});
+  var mn = Math.min.apply(null, pos), mx = Math.max.apply(null, pos);
+  var rng = mx - mn || 1;
+  return avgs.map(function(a) {{
+    if (a <= 0) return _GRID;
+    var t = (a - mn) / rng;
+    if (t < 0.35) return _GOOD;
+    if (t < 0.65) return _WARN;
+    return _BAD;
+  }});
+}}
+
+function _updateBtChart() {{
+  var labels = _btData.labels;
+  var avgVals, todayVals, desc;
+
+  if (_btAvgMode === 'week') {{
+    avgVals = _btData.week_avg;
+  }} else {{
+    // Day average for today's weekday
+    avgVals = _btData.day_avg_today;
+  }}
+
+  if (_btIntMode === 'day') {{
+    todayVals = _btData.today_vals;
+    desc = (_btAvgMode === 'week' ? 'Week' : _btData.today_name) +
+           ' average vs. today';
+  }} else {{
+    todayVals = null;
+    desc = (_btAvgMode === 'week' ? 'All days averaged' :
+            _btData.today_name + ' average');
+  }}
+
+  // Clear existing traces and rebuild
+  var traces = [];
+  var colors = _colorBars(avgVals);
+
+  // Avg bars
+  traces.push({{
+    x: labels, y: avgVals,
+    type: 'bar',
+    marker: {{ color: colors, opacity: todayVals ? 0.4 : 1 }},
+    hovertemplate: '<b>%{{x}}</b><br>Avg: %{{y}} people<extra></extra>',
+    name: _btAvgMode === 'week' ? 'Week Avg' : _btData.today_name + ' Avg',
+    showlegend: !!todayVals,
+  }});
+
+  // Today's actual data overlay
+  if (todayVals) {{
+    traces.push({{
+      x: labels, y: todayVals,
+      type: 'bar',
+      marker: {{ color: _ACCENT, opacity: 0.85 }},
+      hovertemplate: '<b>%{{x}}</b><br>Today: %{{y}} people<extra></extra>',
+      name: 'Today',
+      showlegend: true,
+    }});
+  }}
+
+  Plotly.react('chart-besttime', traces, {{
+    template: 'plotly_dark',
+    paper_bgcolor: 'rgba(0,0,0,0)',
+    plot_bgcolor: 'rgba(0,0,0,0)',
+    font: {{ family: 'Inter,system-ui,sans-serif', color: '{_TEXT}', size: 12 }},
+    margin: {{ l: 50, r: 20, t: 40, b: 40 }},
+    height: 340,
+    barmode: todayVals ? 'overlay' : 'relative',
+    showlegend: !!todayVals,
+    legend: {{ yanchor: 'top', y: 0.99, xanchor: 'right', x: 0.99,
+              bgcolor: 'rgba(0,0,0,0)' }},
+    xaxis: {{ gridcolor: '{_GRID}',
+              tickmode: 'array',
+              tickvals: labels.filter(function(l){{return l.endsWith(':00')}}),
+              ticktext: labels.filter(function(l){{return l.endsWith(':00')}}) }},
+    yaxis: {{ title: 'Avg People', gridcolor: '{_GRID}' }},
+    shapes: [{{ type: 'line', x0: '20:00', x1: '20:00', y0: 0, y1: 1,
+               yref: 'paper', line: {{ color: _WARN, dash: 'dash', width: 1 }} }}],
+    annotations: [{{ x: '20:00', y: 1.02, yref: 'paper',
+                    text: 'Closes 20:00 (Mon/Tue/Thu)',
+                    showarrow: false, font: {{ color: _WARN, size: 9 }} }}],
+  }}, {{ responsive: true, displaylogo: false }});
+
+  document.getElementById('bt-desc').textContent = desc;
+}}
+
+function setBtAvg(mode) {{
+  _btAvgMode = mode;
+  document.querySelectorAll('.bt-avg').forEach(function(b){{b.classList.remove('active')}});
+  event.currentTarget.classList.add('active');
+  _updateBtChart();
+}}
+function setBtInt(mode) {{
+  _btIntMode = mode;
+  document.querySelectorAll('.bt-int').forEach(function(b){{b.classList.remove('active')}});
+  event.currentTarget.classList.add('active');
+  _updateBtChart();
+}}
+
+// Initialize best-time chart with defaults
+_updateBtChart();
 </script>
 
 </body>
@@ -894,4 +1117,5 @@ def build_dashboard_html(lookback_days: int = 30) -> str:
         len(parsed),
         lookback_days,
         raw_data=parsed,
+        bt_data=_best_time_data(parsed),
     )
