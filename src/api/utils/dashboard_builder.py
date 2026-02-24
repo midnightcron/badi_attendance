@@ -511,9 +511,15 @@ def _chart_heatmap(data: list[tuple[datetime, int]]) -> go.Figure:
 # ── Chart 4 — Prediction ──────────────────────────────────────────────────
 
 def _chart_prediction(data: list[tuple[datetime, int]]) -> go.Figure:
-    """Forecast for today & tomorrow using per-slot historical averages."""
+    """Forecast for today & tomorrow using per-slot historical averages.
+
+    The x-axis is a continuous datetime axis spanning from today's opening
+    through tomorrow's closing so both days are visible side by side.
+    """
 
     now = datetime.now(_TZ)
+    today = now.date()
+    tomorrow = today + timedelta(days=1)
     t_dow = now.weekday()
     tm_dow = (t_dow + 1) % 7
 
@@ -524,9 +530,9 @@ def _chart_prediction(data: list[tuple[datetime, int]]) -> go.Figure:
 
     fig = go.Figure()
 
-    for dow, label, color, dash in [
-        (t_dow, f"Today ({_DOW[t_dow]})", _ACCENT, "solid"),
-        (tm_dow, f"Tomorrow ({_DOW[tm_dow]})", _WARN, "dash"),
+    for dow, day_date, label, color, dash in [
+        (t_dow, today, f"Today ({_DOW[t_dow]})", _ACCENT, "solid"),
+        (tm_dow, tomorrow, f"Tomorrow ({_DOW[tm_dow]})", _WARN, "dash"),
     ]:
         oh, ch = _HOURS[dow]
         xs, means, hi, lo = [], [], [], []
@@ -540,7 +546,8 @@ def _chart_prediction(data: list[tuple[datetime, int]]) -> go.Figure:
             avg = sum(v) / len(v)
             std = (math.sqrt(sum((x - avg) ** 2 for x in v) / len(v))
                    if len(v) > 1 else 0)
-            xs.append(_slot(h, m))
+            xs.append(datetime(day_date.year, day_date.month, day_date.day,
+                               h, m, tzinfo=_TZ))
             means.append(round(avg, 1))
             hi.append(round(avg + std, 1))
             lo.append(round(max(avg - std, 0), 1))
@@ -564,40 +571,54 @@ def _chart_prediction(data: list[tuple[datetime, int]]) -> go.Figure:
             line=dict(color=color, width=2, dash=dash),
             marker=dict(size=3),
             hovertemplate=(
-                f"<b>{label} %{{x}}</b><br>"
+                f"<b>{label} %{{x|%H:%M}}</b><br>"
                 f"%{{y}} people<extra></extra>"
             ),
         ))
 
         # Opening / closing annotations
         fig.add_annotation(
-            x=_slot(oh, 0), y=1, yref="paper", yshift=12,
+            x=datetime(day_date.year, day_date.month, day_date.day,
+                       oh, 0, tzinfo=_TZ),
+            y=1, yref="paper", yshift=12,
             text=f"Opens {oh}:00", showarrow=False,
             font=dict(color=_GOOD, size=9),
         )
         fig.add_annotation(
-            x=_slot(ch - 1, 45), y=1, yref="paper", yshift=12,
+            x=datetime(day_date.year, day_date.month, day_date.day,
+                       ch - 1, 45, tzinfo=_TZ),
+            y=1, yref="paper", yshift=12,
             text=f"Closes {ch}:00", showarrow=False,
             font=dict(color=_BAD, size=9),
         )
 
     # "Now" marker
-    now_slot = _slot(*_bin15(now.replace(tzinfo=None)))
     fig.add_vline(
-        x=now_slot, line_dash="dot", line_color=_MUTED, line_width=1.5,
+        x=now, line_dash="dot", line_color=_MUTED, line_width=1.5,
     )
     fig.add_annotation(
-        x=now_slot, y=1, yref="paper", yshift=12,
+        x=now, y=1, yref="paper", yshift=12,
         text="Now", showarrow=False,
         font=dict(color=_MUTED, size=11),
     )
 
-    hticks = [_slot(h, 0) for h in range(_OPEN, _CLOSE + 1)]
+    # x-axis spans from today's opening to tomorrow's closing
+    t_oh, _ = _HOURS[t_dow]
+    _, tm_ch = _HOURS[tm_dow]
+    x_start = (datetime(today.year, today.month, today.day,
+                        t_oh, 0, tzinfo=_TZ) - timedelta(minutes=15))
+    x_end = (datetime(tomorrow.year, tomorrow.month, tomorrow.day,
+                      tm_ch, 0, tzinfo=_TZ) + timedelta(minutes=15))
+
     fig.update_layout(**_base(
         height=360,
         xaxis=dict(
+            type="date",
+            range=[x_start.isoformat(), x_end.isoformat()],
+            autorange=False,
             gridcolor=_GRID,
-            tickmode="array", tickvals=hticks, ticktext=hticks,
+            tickformat="%H:%M",
+            dtick=3600000,          # tick every hour
         ),
         yaxis=dict(title="People", gridcolor=_GRID),
         legend=dict(
@@ -605,6 +626,28 @@ def _chart_prediction(data: list[tuple[datetime, int]]) -> go.Figure:
             bgcolor="rgba(0,0,0,0)",
         ),
     ))
+
+    # Add day-separator annotation at midnight
+    midnight = datetime(tomorrow.year, tomorrow.month, tomorrow.day,
+                        0, 0, tzinfo=_TZ)
+    fig.add_vline(
+        x=midnight, line_dash="solid", line_color=_BORDER, line_width=1,
+    )
+    # Day labels at top of each day's section
+    fig.add_annotation(
+        x=datetime(today.year, today.month, today.day, 14, 0, tzinfo=_TZ),
+        y=1, yref="paper", yshift=24,
+        text=f"<b>{today.strftime('%a %d %b')}</b>",
+        showarrow=False, font=dict(color=_ACCENT, size=12),
+    )
+    fig.add_annotation(
+        x=datetime(tomorrow.year, tomorrow.month, tomorrow.day,
+                   14, 0, tzinfo=_TZ),
+        y=1, yref="paper", yshift=24,
+        text=f"<b>{tomorrow.strftime('%a %d %b')}</b>",
+        showarrow=False, font=dict(color=_WARN, size=12),
+    )
+
     return fig
 
 
