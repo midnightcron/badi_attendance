@@ -8,6 +8,9 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+_TZ = ZoneInfo("Europe/Zurich")
 
 
 class WebSocketListener:
@@ -193,7 +196,7 @@ class WebSocketListener:
                     
                     return {
                         'occupancy': int(float(occupancy)),
-                        'timestamp': datetime.now(timezone.utc).isoformat()
+                        'timestamp': datetime.now(_TZ).isoformat()
                     }
             
             # Target UID not found in this message (not an error,

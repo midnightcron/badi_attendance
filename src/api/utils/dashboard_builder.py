@@ -141,7 +141,7 @@ def _fetch_readings(lookback_days: int) -> list[dict]:
     cc = svc.get_container_client(container)
 
     rows: list[dict] = []
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(_TZ).date()
     loaded_days = []
 
     for offset in range(lookback_days + 1):
@@ -175,16 +175,19 @@ def _fetch_readings(lookback_days: int) -> list[dict]:
 
 
 def _parse(rows: list[dict]) -> list[tuple[datetime, int]]:
-    """Raw dicts → (local_datetime, occupancy) in Europe/Zurich."""
+    """Raw dicts → (naive local datetime, occupancy) in Europe/Zurich.
+
+    Timestamps in blob CSVs are already CET (Europe/Zurich).  If an offset
+    is present we convert; otherwise the value is used as-is.
+    """
     out: list[tuple[datetime, int]] = []
     for r in rows:
         s = r["timestamp"]
         try:
-            # Use fromisoformat (Python 3.11+) — handles +00:00 offsets
             dt = datetime.fromisoformat(s)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            dt = dt.astimezone(_TZ).replace(tzinfo=None)
+            if dt.tzinfo is not None:
+                dt = dt.astimezone(_TZ)
+            dt = dt.replace(tzinfo=None)
             out.append((dt, r["occupancy"]))
         except ValueError:
             continue

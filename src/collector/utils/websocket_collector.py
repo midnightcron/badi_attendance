@@ -12,6 +12,9 @@ import logging
 import os
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+_TZ = ZoneInfo("Europe/Zurich")
 
 
 def run_collection() -> dict:
@@ -42,7 +45,7 @@ async def _async_collect() -> dict:
         dict with collection stats.
     """
     logger = logging.getLogger("collector")
-    window_start = datetime.now(timezone.utc)
+    window_start = datetime.now(_TZ)
     start_time = time.time()
 
     logger.info(f"WebSocket collection started at {window_start.isoformat()}")

@@ -14,6 +14,9 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+_TZ = ZoneInfo("Europe/Zurich")
 
 logger = logging.getLogger("get_occupancy")
 
@@ -54,7 +57,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                     status_code=400,
                 )
         else:
-            end_date = datetime.now(timezone.utc).replace(tzinfo=None)
+            end_date = datetime.now(_TZ).replace(tzinfo=None)
             start_date = end_date - timedelta(days=days)
 
         # Read data from blobs
@@ -180,17 +183,17 @@ def _aggregate(readings: list, minutes: int) -> list:
 
     for r in readings:
         try:
-            # Parse ISO timestamp (handles timezone offsets like +00:00)
+            # Parse ISO timestamp — timestamps are CET (Europe/Zurich)
             ts_str = r["timestamp"]
             ts = datetime.fromisoformat(ts_str)
-            if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
+            if ts.tzinfo is not None:
+                ts = ts.astimezone(_TZ).replace(tzinfo=None)
 
             # Floor to bucket boundary
             epoch = ts.timestamp()
             bucket_epoch = (int(epoch) // bucket_seconds) * bucket_seconds
             bucket_key = datetime.fromtimestamp(
-                bucket_epoch, tz=timezone.utc
+                bucket_epoch, tz=_TZ
             ).strftime("%Y-%m-%dT%H:%M:%S")
 
             if bucket_key not in buckets:
