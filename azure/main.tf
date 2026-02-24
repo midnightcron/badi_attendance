@@ -130,14 +130,15 @@ resource "azurerm_function_app_flex_consumption" "collector" {
   maximum_instance_count = 40
   instance_memory_in_mb  = 2048
 
-  # Always-ready instances — timer triggers must fire reliably.
+  # Always-ready instances — the activity does the long-running WebSocket
+  # collection; the ensure_running timer verifies the orchestrator is alive.
   always_ready {
-    name           = "function:websocket_listener_even"
+    name           = "function:collect_activity"
     instance_count = 1
   }
 
   always_ready {
-    name           = "function:websocket_listener_odd"
+    name           = "function:ensure_running"
     instance_count = 1
   }
 

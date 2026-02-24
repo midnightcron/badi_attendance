@@ -1,9 +1,9 @@
 """
-Shared WebSocket collection logic for leap-frog timer functions.
+Shared WebSocket collection logic.
 
-Both websocket_listener_even and websocket_listener_odd call
-`run_collection(label, mytimer)` with their respective label.
-This avoids duplicating ~150 lines of identical Python code.
+Called by the Durable Functions activity to perform a single ~296 s
+collection cycle: connect to CrowdMonitor → gather occupancy readings →
+write CSV to blob storage.
 """
 
 import asyncio
@@ -13,46 +13,39 @@ import os
 import time
 from datetime import datetime, timezone
 
-import azure.functions as func
 
-
-def run_collection(label: str, mytimer: func.TimerRequest) -> None:
+def run_collection() -> dict:
     """
-    Entry point called by each Azure Function's main().
+    Entry point called by the collect_activity Durable Function.
 
-    Args:
-        label: "even" or "odd" — used for log prefixes and blob paths.
-        mytimer: The Azure Functions TimerRequest object.
+    Returns:
+        dict with collection stats (count, min, max, avg, duration_s).
     """
-    tag = label.upper()
-    logger = logging.getLogger(f"websocket_listener_{label}_main")
-    logger.info(f"[{tag}] Function invoked")
+    logger = logging.getLogger("collector")
+    logger.info("Collection cycle started")
 
     try:
-        asyncio.run(_async_collect(label, mytimer))
-        logger.info(f"[{tag}] Collection completed successfully")
+        result = asyncio.run(_async_collect())
+        logger.info("Collection cycle completed successfully")
+        return result
     except Exception as e:
-        logger.error(f"[{tag}] Fatal error: {e}", exc_info=True)
+        logger.error(f"Fatal error: {e}", exc_info=True)
         raise
 
 
-async def _async_collect(label: str, mytimer: func.TimerRequest) -> None:
+async def _async_collect() -> dict:
     """
-    Async implementation: connect to WebSocket, collect 5 minutes of
+    Async implementation: connect to WebSocket, collect ~296 s of
     occupancy data, compute stats, and persist to blob storage.
+
+    Returns:
+        dict with collection stats.
     """
-    tag = label.upper()
-    logger = logging.getLogger(f"websocket_listener_{label}")
+    logger = logging.getLogger("collector")
     window_start = datetime.now(timezone.utc)
     start_time = time.time()
 
-    if mytimer.past_due:
-        logger.warning(f"websocket_listener_{label} timer is past due")
-
-    logger.info(
-        f"[{tag}] WebSocket listener ({label}) started at "
-        f"{window_start.isoformat()}"
-    )
+    logger.info(f"WebSocket collection started at {window_start.isoformat()}")
 
     try:
         websocket_url = os.getenv(
@@ -60,16 +53,14 @@ async def _async_collect(label: str, mytimer: func.TimerRequest) -> None:
         )
         target_uid = os.getenv("TARGET_UID", "SSD-7")
 
-        logger.info(
-            f"[{tag}] Connecting to: {websocket_url}, UID: {target_uid}"
-        )
+        logger.info(f"Connecting to: {websocket_url}, UID: {target_uid}")
 
         # Lazy import to avoid init-time issues
         from utils.websocket_handler import WebSocketListener
 
-        # Collect for 5 minutes (296 s) to avoid duplicate points at boundaries.
-        # At hour boundaries (e.g., 23:55 → 23:58:56), this gives extra buffer
-        # for the previous function's connection to fully close on the server.
+        # Collect for ~296 s.  The orchestrator schedules the next cycle
+        # 300 s after the start, so there is a ~4 s gap — short enough
+        # that no data is lost (API pushes every ~3-4 s).
         listener = WebSocketListener(
             url=websocket_url, target_uid=target_uid, duration_seconds=296
         )
@@ -77,52 +68,44 @@ async def _async_collect(label: str, mytimer: func.TimerRequest) -> None:
 
         elapsed = time.time() - start_time
         logger.info(
-            f"[{tag}] Collected {len(updates)} updates in 5-minute window "
-            f"(actual time: {elapsed:.1f}s)"
+            f"Collected {len(updates)} updates in {elapsed:.1f}s"
         )
+
+        result = {"count": 0, "duration_s": round(elapsed, 1)}
 
         if updates:
             occupancies = [u["occupancy"] for u in updates]
-            stats = {
+            result.update({
                 "count": len(updates),
                 "min": min(occupancies),
                 "max": max(occupancies),
-                "avg": sum(occupancies) / len(occupancies),
+                "avg": round(sum(occupancies) / len(occupancies), 1),
                 "median": sorted(occupancies)[len(occupancies) // 2],
-            }
+            })
 
             logger.info(
-                f"[{tag}] Stats: count={stats['count']}, min={stats['min']}, "
-                f"max={stats['max']}, avg={stats['avg']:.1f}, "
-                f"median={stats['median']}"
-            )
-            logger.info(
-                f"[{tag}] Sample updates: {json.dumps(updates[:5])}"
+                f"Stats: count={result['count']}, min={result['min']}, "
+                f"max={result['max']}, avg={result['avg']}, "
+                f"median={result['median']}"
             )
 
-            # Write to blob storage as CSV (if available)
+            # Write to blob storage as CSV
             try:
-                await _write_to_blob(logger, updates, window_start, label)
+                await _write_to_blob(logger, updates, window_start)
             except Exception as blob_error:
-                logger.warning(
-                    f"[{tag}] Could not write to blob: {blob_error}"
-                )
+                logger.warning(f"Could not write to blob: {blob_error}")
         else:
-            logger.warning(
-                f"[{tag}] No updates received in 5-minute window"
-            )
+            logger.warning("No updates received in collection window")
+
+        return result
 
     except Exception as e:
-        logger.error(
-            f"[{tag}] Error in websocket_listener_{label}: {e}",
-            exc_info=True,
-        )
+        logger.error(f"Error during collection: {e}", exc_info=True)
         raise
 
 
-async def _write_to_blob(logger, updates, window_start, label):
+async def _write_to_blob(logger, updates, window_start):
     """Write occupancy readings to blob storage as CSV."""
-    tag = label.upper()
     try:
         from azure.storage.blob import BlobServiceClient
 
@@ -136,8 +119,8 @@ async def _write_to_blob(logger, updates, window_start, label):
 
         if not conn_str:
             logger.warning(
-                f"[{tag}] No storage connection string configured, "
-                f"skipping blob write. Set AZURE_STORAGE_CONNECTION_STRING."
+                "No storage connection string configured, "
+                "skipping blob write. Set AZURE_STORAGE_CONNECTION_STRING."
             )
             return
 
@@ -159,7 +142,7 @@ async def _write_to_blob(logger, updates, window_start, label):
         )
         try:
             container_client.create_container()
-            logger.info(f"[{tag}] Created container: {container_name}")
+            logger.info(f"Created container: {container_name}")
         except Exception:
             pass  # Container already exists
 
@@ -167,13 +150,10 @@ async def _write_to_blob(logger, updates, window_start, label):
         blob_client.upload_blob(csv_content, overwrite=True)
 
         logger.info(
-            f"[{tag}] Wrote {len(updates)} occupancy readings "
-            f"to blob: {container_name}/{blob_name}"
+            f"Wrote {len(updates)} readings to blob: "
+            f"{container_name}/{blob_name}"
         )
 
     except Exception as e:
-        logger.error(
-            f"[{tag}] Error writing to blob storage: {e}",
-            exc_info=True,
-        )
+        logger.error(f"Error writing to blob storage: {e}", exc_info=True)
         # Don't raise — don't fail entire function if blob write fails
