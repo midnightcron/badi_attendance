@@ -79,6 +79,17 @@ resource "azurerm_storage_account" "function_storage" {
   access_tier              = "Hot"
 }
 
+# Deployment blob containers (one per Function App)
+resource "azurerm_storage_container" "collector_package" {
+  name               = "collector-package"
+  storage_account_id = azurerm_storage_account.function_storage.id
+}
+
+resource "azurerm_storage_container" "api_package" {
+  name               = "api-package"
+  storage_account_id = azurerm_storage_account.function_storage.id
+}
+
 # Application Insights
 resource "azurerm_application_insights" "app_insights" {
   name                = "${local.project_name}-${local.environment}-insights"
