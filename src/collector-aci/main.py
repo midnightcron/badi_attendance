@@ -127,6 +127,7 @@ async def collection_loop() -> None:
                         )
                         data = client.parse_message(message)
                         if data:
+                            # Always write both columns, even if one is None
                             try:
                                 write_reading(table_client, data)
                                 writes_since_log += 1

@@ -54,20 +54,16 @@ def write_reading(table_client, reading: dict) -> None:
     ts_str = reading["timestamp"]
 
     # Split "2026-02-27T14:03:07.123456+01:00" into date + time parts
-    # Date part = everything before 'T'
     date_part = ts_str[:10]          # "2026-02-27"
     time_part = ts_str[11:26]        # "14:03:07.123456" (up to microseconds)
-
-    # If the timestamp has no microseconds, pad to ensure uniqueness
     if len(time_part) < 15:
         time_part = time_part.ljust(15, "0")
 
     entity = {
         "PartitionKey": date_part,
         "RowKey": time_part,
-        "occupancy": reading["occupancy"],
+        "occupancy_oerlikon": reading.get("occupancy_oerlikon"),
+        "occupancy_city": reading.get("occupancy_city"),
         # Full timestamp is reconstructable from PartitionKey + RowKey.
-        # The system 'Timestamp' column (immutable) records write time.
     }
-
     table_client.upsert_entity(entity)

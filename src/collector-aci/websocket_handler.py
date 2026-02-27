@@ -22,7 +22,9 @@ class WebSocketClient:
 
     def __init__(self, url: str, target_uid: str) -> None:
         self.url = url
-        self.target_uid = target_uid
+            self.target_uid = target_uid
+            self.oerlikon_uid = "SSD-7"
+            self.city_uid = "SSD-4"
 
     @asynccontextmanager
     async def connect(self):
@@ -59,7 +61,7 @@ class WebSocketClient:
             ]
 
         Returns:
-            {"occupancy": int, "timestamp": str}  or  None
+                {"occupancy_oerlikon": int, "occupancy_city": int, "timestamp": str}  or  None
         """
         try:
             data_array = json.loads(message)
@@ -68,18 +70,26 @@ class WebSocketClient:
                 logger.warning(f"Unexpected message type: {type(data_array)}")
                 return None
 
-            for element in data_array:
-                if element.get("uid") == self.target_uid:
-                    occupancy = element.get("currentfill")
-                    if occupancy is None:
-                        logger.warning(
-                            f"No 'currentfill' for {self.target_uid}"
-                        )
-                        return None
-                    return {
-                        "occupancy": int(float(occupancy)),
-                        "timestamp": datetime.now(_TZ).isoformat(),
-                    }
+                occupancy_oerlikon = None
+                occupancy_city = None
+                timestamp = None
+                for element in data_array:
+                    uid = element.get("uid")
+                    if uid == self.oerlikon_uid:
+                        occupancy_oerlikon = element.get("currentfill")
+                        timestamp = element.get("timestamp") or datetime.now(_TZ).isoformat()
+                    elif uid == self.city_uid:
+                        occupancy_city = element.get("currentfill")
+                        if not timestamp:
+                            timestamp = element.get("timestamp") or datetime.now(_TZ).isoformat()
+                if occupancy_oerlikon is None and occupancy_city is None:
+                    logger.warning(f"No 'currentfill' for Oerlikon ({self.oerlikon_uid}) or City ({self.city_uid})")
+                    return None
+                return {
+                    "occupancy_oerlikon": int(float(occupancy_oerlikon)) if occupancy_oerlikon is not None else None,
+                    "occupancy_city": int(float(occupancy_city)) if occupancy_city is not None else None,
+                    "timestamp": timestamp or datetime.now(_TZ).isoformat(),
+                }
 
             # Target UID not in this message (e.g. a heartbeat/refresh)
             return None
