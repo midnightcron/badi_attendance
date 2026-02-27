@@ -208,6 +208,9 @@ marimo/_lsp/
 __marimo__/
 .terraform/
 *.tfstate*
+*.tfplan
+tfplan
+.terraform.lock.hcl
 .env
 nohup.out
 
