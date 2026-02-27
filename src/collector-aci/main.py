@@ -9,12 +9,17 @@ data loss on crash.
 A periodic summary log is emitted every STATS_INTERVAL_SECONDS
 so operators can confirm healthy throughput.
 
+A daily aggregation task runs concurrently: once at startup and then
+every day at 02:00 Europe/Zurich, it reads all raw rows and writes
+per-weekday/15-min-slot statistics to the patterns table.
+
 Environment variables:
     WEBSOCKET_URL               WebSocket endpoint
                                 (default: wss://…crowdmonitor…)
     TARGET_UID                  Location UID to track (default: SSD-7)
     AZURE_STORAGE_CONNECTION_STRING   Storage connection string
     TABLE_NAME                  Table Storage table (default: occupancy)
+    TABLE_NAME_PATTERNS         Patterns table (default: occupancypatterns)
     STATS_INTERVAL_SECONDS      How often to log a stats line (default: 300)
     LOG_LEVEL                   Logging level (default: INFO)
 """
@@ -27,6 +32,7 @@ import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from aggregator import aggregation_loop
 from table_writer import get_table_client, write_reading
 from websocket_handler import WebSocketClient
 
@@ -41,6 +47,7 @@ WEBSOCKET_URL = os.getenv(
 TARGET_UID = os.getenv("TARGET_UID", "SSD-7")
 STATS_INTERVAL = int(os.getenv("STATS_INTERVAL_SECONDS", "300"))
 TABLE_NAME = os.getenv("TABLE_NAME", "occupancy")
+TABLE_NAME_PATTERNS = os.getenv("TABLE_NAME_PATTERNS", "occupancypatterns")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 # Reconnection back-off
@@ -78,19 +85,10 @@ def _request_shutdown(sig, _frame):
 # ---------------------------------------------------------------------------
 # Main collection loop
 # ---------------------------------------------------------------------------
-async def collection_loop() -> None:
+async def collection_loop(table_client) -> None:
     """Infinite loop: connect → write each reading immediately."""
     backoff = INITIAL_BACKOFF
     client = WebSocketClient(url=WEBSOCKET_URL, target_uid=TARGET_UID)
-
-    # Initialise Table Storage client once
-    conn_str = os.getenv("AZURE_STORAGE_CONNECTION_STRING", "")
-    if not conn_str:
-        logger.error("AZURE_STORAGE_CONNECTION_STRING not set — exiting")
-        return
-
-    table_client = get_table_client(conn_str, TABLE_NAME)
-    logger.info(f"Table Storage client ready (table={TABLE_NAME})")
 
     while not _shutdown_event.is_set():
         # Stats counters for the current connection session
@@ -159,20 +157,38 @@ async def collection_loop() -> None:
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+async def _async_main(occupancy_client, patterns_client) -> None:
+    """Run collection and aggregation loops concurrently."""
+    await asyncio.gather(
+        collection_loop(occupancy_client),
+        aggregation_loop(occupancy_client, patterns_client, _shutdown_event),
+        return_exceptions=True,
+    )
+
+
 def main() -> None:
     # Register signal handlers before entering the event loop
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, _request_shutdown)
 
+    conn_str = os.getenv("AZURE_STORAGE_CONNECTION_STRING", "")
+    if not conn_str:
+        logger.error("AZURE_STORAGE_CONNECTION_STRING not set — exiting")
+        sys.exit(1)
+
+    occupancy_client = get_table_client(conn_str, TABLE_NAME)
+    patterns_client = get_table_client(conn_str, TABLE_NAME_PATTERNS)
+
     logger.info("=== BADI Oerlikon ACI Collector starting ===")
     logger.info(f"  WebSocket : {WEBSOCKET_URL}")
     logger.info(f"  Target UID: {TARGET_UID}")
     logger.info(f"  Storage   : Table Storage (table={TABLE_NAME})")
+    logger.info(f"  Patterns  : Table Storage (table={TABLE_NAME_PATTERNS})")
     logger.info(f"  Stats log : every {STATS_INTERVAL}s")
     logger.info(f"  Timezone  : {_TZ}")
 
     try:
-        asyncio.run(collection_loop())
+        asyncio.run(_async_main(occupancy_client, patterns_client))
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt — exiting")
 

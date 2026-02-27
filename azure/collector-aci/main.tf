@@ -64,6 +64,11 @@ resource "azurerm_storage_table" "occupancy" {
   storage_account_name = azurerm_storage_account.storage.name
 }
 
+resource "azurerm_storage_table" "occupancy_patterns" {
+  name                 = "occupancypatterns"
+  storage_account_name = azurerm_storage_account.storage.name
+}
+
 # ─── Container Registry (Basic SKU — ~$5/month) ──────────────────
 resource "azurerm_container_registry" "acr" {
   name                = local.acr_name
@@ -107,6 +112,7 @@ resource "azurerm_container_group" "collector" {
       WEBSOCKET_URL          = var.websocket_url
       TARGET_UID             = var.target_uid
       TABLE_NAME             = "occupancy"
+      TABLE_NAME_PATTERNS    = "occupancypatterns"
       STATS_INTERVAL_SECONDS = "300"
       LOG_LEVEL              = "INFO"
     }

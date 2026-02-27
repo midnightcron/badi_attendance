@@ -7,7 +7,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY main.py websocket_handler.py table_writer.py blob_writer.py ./
+COPY main.py websocket_handler.py table_writer.py blob_writer.py aggregator.py ./
 
 # Non-root user for security
 RUN useradd --create-home appuser
