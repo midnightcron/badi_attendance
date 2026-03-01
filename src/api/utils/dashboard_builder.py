@@ -10,8 +10,6 @@ Charts (all Plotly, server-rendered):
 
 from __future__ import annotations
 
-import csv
-import io
 import json
 import logging
 import math
@@ -121,11 +119,11 @@ def _base(**kw) -> dict:
 # ── Data fetching ──────────────────────────────────────────────────────────
 
 def _fetch_readings(lookback_days: int) -> list[dict]:
-    """Read CSV blobs for the last N days from Azure Blob Storage."""
+    """Read occupancy data from Azure Table Storage."""
     try:
-        from azure.storage.blob import BlobServiceClient
+        from azure.data.tables import TableServiceClient
     except ImportError:
-        logger.error("azure-storage-blob not installed")
+        logger.error("azure-data-tables not installed")
         return []
 
     conn = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
@@ -136,9 +134,9 @@ def _fetch_readings(lookback_days: int) -> list[dict]:
     if not conn:
         return []
 
-    container = os.getenv("BLOB_CONTAINER_NAME", "occupancy-data")
-    svc = BlobServiceClient.from_connection_string(conn)
-    cc = svc.get_container_client(container)
+    table_name = os.getenv("TABLE_NAME", "occupancy")
+    svc = TableServiceClient.from_connection_string(conn)
+    table = svc.get_table_client(table_name)
 
     rows: list[dict] = []
     today = datetime.now(_TZ).date()
@@ -146,49 +144,46 @@ def _fetch_readings(lookback_days: int) -> list[dict]:
 
     for offset in range(lookback_days + 1):
         day = today - timedelta(days=offset)
-        prefix = day.strftime("%Y-%m-%d/")
-        found = False
+        pk = day.isoformat()
         try:
-            for blob in cc.list_blobs(name_starts_with=prefix):
-                found = True
-                try:
-                    data = (cc.get_blob_client(blob.name)
-                            .download_blob().readall().decode())
-                    for r in csv.DictReader(io.StringIO(data)):
-                        ts = r.get("timestamp", "")
-                        occ = r.get("occupancy", "")
-                        if ts and occ:
-                            rows.append({
-                                "timestamp": ts,
-                                "occupancy": int(float(occ)),
-                            })
-                except Exception:
-                    pass
+            entities = list(table.query_entities(f"PartitionKey eq '{pk}'"))
+            if entities:
+                loaded_days.append(pk)
+            for e in entities:
+                occ_o = e.get("occupancy_oerlikon")
+                occ_c = e.get("occupancy_city")
+                if occ_o is None and occ_c is None:
+                    continue
+                # Reconstruct naive CET timestamp from PartitionKey + RowKey
+                ts = f"{e['PartitionKey']}T{e['RowKey']}"
+                rows.append({
+                    "timestamp": ts,
+                    "occupancy_oerlikon": int(occ_o) if occ_o is not None else None,
+                    "occupancy_city": int(occ_c) if occ_c is not None else None,
+                })
         except Exception:
             pass
-        if found:
-            loaded_days.append(day.isoformat())
 
     logger.info(f"Dashboard loaded data for days: {loaded_days}")
     rows.sort(key=lambda r: r["timestamp"])
     return rows
 
 
-def _parse(rows: list[dict]) -> list[tuple[datetime, int]]:
-    """Raw dicts → (naive local datetime, occupancy) in Europe/Zurich.
-
-    Timestamps in blob CSVs are already CET (Europe/Zurich).  If an offset
-    is present we convert; otherwise the value is used as-is.
-    """
+def _parse(rows: list[dict], location: str = "oerlikon") -> list[tuple[datetime, int]]:
+    """Raw dicts → (naive local datetime, occupancy) in Europe/Zurich."""
+    key = f"occupancy_{location}"
     out: list[tuple[datetime, int]] = []
     for r in rows:
+        occ = r.get(key)
+        if occ is None:
+            continue
         s = r["timestamp"]
         try:
             dt = datetime.fromisoformat(s)
             if dt.tzinfo is not None:
                 dt = dt.astimezone(_TZ)
             dt = dt.replace(tzinfo=None)
-            out.append((dt, r["occupancy"]))
+            out.append((dt, occ))
         except ValueError:
             continue
     return out
@@ -668,8 +663,14 @@ def _assemble_page(
     lookback_days: int,
     raw_data: list[tuple[datetime, int]] | None = None,
     bt_data: dict | None = None,
+    location: str = "oerlikon",
 ) -> str:
     """Combine all charts into one dark-mode HTML page."""
+
+    is_oerlikon = location == "oerlikon"
+    loc_label  = "Hallenbad Oerlikon" if is_oerlikon else "Hallenbad City"
+    loc_uid    = "SSD-7" if is_oerlikon else "SSD-4"
+    other_loc  = "city" if is_oerlikon else "oerlikon"
 
     now = datetime.now(_TZ)
     now_str = now.strftime("%H:%M %Z, %a %d %b %Y")
@@ -829,6 +830,24 @@ def _assemble_page(
   footer a {{ color: {_ACCENT}; text-decoration: none; }}
   footer a:hover {{ text-decoration: underline; }}
 
+  /* ── Location toggle ── */
+  .loc-toggle {{
+    display: inline-flex; border: 1px solid {_BORDER};
+    border-radius: 8px; overflow: hidden;
+  }}
+  .ltoggle {{
+    padding: 5px 16px; font-size: 0.82em; font-weight: 500;
+    font-family: inherit; cursor: pointer; text-decoration: none;
+    color: {_MUTED}; background: transparent; transition: all .15s;
+    white-space: nowrap;
+  }}
+  .ltoggle:hover {{ color: {_TEXT}; }}
+  .ltoggle.active {{
+    background: rgba({accent_rgb},0.15);
+    color: {_ACCENT};
+  }}
+  .ltoggle + .ltoggle {{ border-left: 1px solid {_BORDER}; }}
+
   /* Plotly tweaks */
   .js-plotly-plot .plotly .modebar {{ opacity: 0.4; }}
   .js-plotly-plot .plotly .modebar:hover {{ opacity: 1; }}
@@ -842,12 +861,18 @@ def _assemble_page(
   <header>
     <div class="header-row">
       <div>
-        <h1>\U0001f3ca Badi Oerlikon</h1>
+        <h1>\U0001f3ca {loc_label}</h1>
         <div class="subtitle">
           {n_readings:,} readings &middot; {lookback_days}-day window &middot; {now_str}
         </div>
       </div>
-      <span class="badge {status_cls}">{status_icon} {status_text}</span>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <div class="loc-toggle">
+          <a class="ltoggle {'active' if is_oerlikon else ''}" href="?location=oerlikon">Hallenbad Oerlikon</a>
+          <a class="ltoggle {'' if is_oerlikon else 'active'}" href="?location=city">Hallenbad City</a>
+        </div>
+        <span class="badge {status_cls}">{status_icon} {status_text}</span>
+      </div>
     </div>
   </header>
 
@@ -952,7 +977,7 @@ def _assemble_page(
   </div>
 
   <footer>
-    Data: CrowdMonitor WebSocket &middot; Badi Oerlikon (SSD-7) &middot;
+    Data: CrowdMonitor WebSocket &middot; {loc_label} ({loc_uid}) &middot;
     <a href="/api/occupancy?days=7">JSON API</a> &middot;
     <a href="/api/health_check">Health</a>
   </footer>
@@ -1145,13 +1170,16 @@ def _empty_page(msg: str) -> str:
 
 # ── Public entry point ─────────────────────────────────────────────────────
 
-def build_dashboard_html(lookback_days: int = 30) -> str:
+def build_dashboard_html(lookback_days: int = 30, location: str = "oerlikon") -> str:
     """Fetch data, build charts, return complete HTML page."""
+    if location not in ("oerlikon", "city"):
+        location = "oerlikon"
+
     readings = _fetch_readings(lookback_days)
     if not readings:
         return _empty_page("No occupancy data found yet — check back later.")
 
-    parsed = _parse(readings)
+    parsed = _parse(readings, location)
     if not parsed:
         return _empty_page("Could not parse any readings.")
 
@@ -1164,4 +1192,5 @@ def build_dashboard_html(lookback_days: int = 30) -> str:
         lookback_days,
         raw_data=parsed,
         bt_data=_best_time_data(parsed),
+        location=location,
     )
