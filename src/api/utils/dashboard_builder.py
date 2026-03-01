@@ -31,8 +31,8 @@ _DOW = [
     "Friday", "Saturday", "Sunday",
 ]
 
-# Official opening hours (open_hour, close_hour)
-_HOURS: dict[int, tuple[int, int]] = {
+# Official opening hours (open_hour, close_hour) per location
+_HOURS_OERLIKON: dict[int, tuple[int, int]] = {
     0: (6, 20),  # Montag
     1: (6, 20),  # Dienstag
     2: (6, 22),  # Mittwoch  (Kinderspielnachmittag 14–16)
@@ -41,13 +41,23 @@ _HOURS: dict[int, tuple[int, int]] = {
     5: (6, 22),  # Samstag
     6: (6, 22),  # Sonntag
 }
+_HOURS_CITY: dict[int, tuple[int, int]] = {i: (6, 22) for i in range(7)}  # Mon–Sun 06–22
 
-_OPEN = 6   # earliest opening across all days
-_CLOSE = 22  # latest closing across all days
+_LOCATION_HOURS: dict[str, dict[int, tuple[int, int]]] = {
+    "oerlikon": _HOURS_OERLIKON,
+    "city":     _HOURS_CITY,
+}
 
-# Best-time recommendation: ≤ 30 min before earliest close (20:00) → 19:30
-# (assumes a 30-minute swimming slot; start must allow full slot before close)
-_BEST_H, _BEST_M = 19, 30
+_OPEN = 6   # earliest opening across all locations/days
+_CLOSE = 22  # latest closing across all locations/days
+
+# Best-time cutoff: 30 min before the earliest close on any day
+# Oerlikon: 30 min before 20:00 → 19:30; City: 30 min before 22:00 → 21:30
+_BEST_CUTOFF: dict[str, tuple[int, int]] = {
+    "oerlikon": (19, 30),
+    "city":     (21, 30),
+}
+_BEST_H, _BEST_M = 19, 30  # Oerlikon default (kept for internal use)
 
 # ── Dark-mode colour palette (GitHub dark) ─────────────────────────────────
 
@@ -77,14 +87,14 @@ def _all_slots() -> list[tuple[int, int]]:
     return slots
 
 
-def _is_open(dow: int, h: int, m: int) -> bool:
-    oh, ch = _HOURS[dow]
+def _is_open(dow: int, h: int, m: int, hours: dict[int, tuple[int, int]] = _HOURS_OERLIKON) -> bool:
+    oh, ch = hours[dow]
     return oh <= h + m / 60 < ch
 
 
-def _before_cutoff(h: int, m: int) -> bool:
-    """True when the slot is ≤ 19:15 (45 min before earliest close)."""
-    return (h, m) <= (_BEST_H, _BEST_M)
+def _before_cutoff(h: int, m: int, best_cutoff: tuple[int, int] = (_BEST_H, _BEST_M)) -> bool:
+    """True when the slot start is early enough to complete a 30-min swim before close."""
+    return (h, m) <= best_cutoff
 
 
 def _bin15(dt: datetime) -> tuple[int, int]:
@@ -191,7 +201,10 @@ def _parse(rows: list[dict], location: str = "oerlikon") -> list[tuple[datetime,
 
 # ── Chart 1 — Timeline ────────────────────────────────────────────────────
 
-def _chart_timeline(data: list[tuple[datetime, int]]) -> go.Figure:
+def _chart_timeline(
+    data: list[tuple[datetime, int]],
+    hours: dict[int, tuple[int, int]] = _HOURS_OERLIKON,
+) -> go.Figure:
     """Line chart of raw occupancy (5-min buckets) with opening-hour shapes."""
 
     # 5-min bucketing
@@ -222,7 +235,7 @@ def _chart_timeline(data: list[tuple[datetime, int]]) -> go.Figure:
         d0, d1 = ts[0].date(), ts[-1].date()
         cur = d0
         while cur <= d1:
-            oh, ch = _HOURS[cur.weekday()]
+            oh, ch = hours[cur.weekday()]
             shapes.append(dict(
                 type="rect",
                 x0=datetime(cur.year, cur.month, cur.day, oh).isoformat(),
@@ -253,7 +266,11 @@ def _chart_timeline(data: list[tuple[datetime, int]]) -> go.Figure:
 
 # ── Chart 2 — Best time to visit ──────────────────────────────────────────
 
-def _chart_best_time(data: list[tuple[datetime, int]]) -> go.Figure:
+def _chart_best_time(
+    data: list[tuple[datetime, int]],
+    hours: dict[int, tuple[int, int]] = _HOURS_OERLIKON,
+    best_cutoff: tuple[int, int] = (_BEST_H, _BEST_M),
+) -> go.Figure:
     """
     Bar chart with 4 views controlled by JS buttons:
 
@@ -285,17 +302,21 @@ def _chart_best_time(data: list[tuple[datetime, int]]) -> go.Figure:
     ))
 
     # ── Best-time marker ──
-    _add_best_time_marker(fig, slots, labels, week_avg)
+    _add_best_time_marker(fig, slots, labels, week_avg, hours=hours, best_cutoff=best_cutoff)
 
-    # ── Closing-time marker at 20:00 ──
-    fig.add_vline(
-        x="20:00", line_dash="dash", line_color=_WARN, line_width=1,
-    )
-    fig.add_annotation(
-        x="20:00", y=1.02, yref="paper",
-        text="Closes 20:00 (Mon/Tue/Thu)",
-        showarrow=False, font=dict(color=_WARN, size=9),
-    )
+    # ── Early-closing marker (only when some days close before 22:00) ──
+    early_closes = {ch for _oh, ch in hours.values() if ch < _CLOSE}
+    if early_closes:
+        early_ch = min(early_closes)
+        close_days = "/".join(
+            _DOW[d][:3] for d, (_oh, ch) in sorted(hours.items()) if ch == early_ch
+        )
+        fig.add_vline(x=f"{early_ch:02d}:00", line_dash="dash", line_color=_WARN, line_width=1)
+        fig.add_annotation(
+            x=f"{early_ch:02d}:00", y=1.02, yref="paper",
+            text=f"Closes {early_ch}:00 ({close_days})",
+            showarrow=False, font=dict(color=_WARN, size=9),
+        )
 
     hticks = [_slot(h, 0) for h in range(_OPEN, _CLOSE + 1)]
     fig.update_layout(**_base(
@@ -416,10 +437,12 @@ def _add_best_time_marker(
     slots: list[tuple[int, int]],
     labels: list[str],
     avgs: list[float],
+    hours: dict[int, tuple[int, int]] = _HOURS_OERLIKON,
+    best_cutoff: tuple[int, int] = (_BEST_H, _BEST_M),
 ) -> None:
     """Annotate the best 30-min swim window."""
     slot_ok = [
-        a > 0 and _is_open(0, *s)
+        a > 0 and _is_open(0, *s, hours=hours)
         for s, a in zip(slots, avgs)
     ]
     best_start: int | None = None
@@ -427,7 +450,7 @@ def _add_best_time_marker(
     for i in range(len(slots) - 1):
         if not (slot_ok[i] and slot_ok[i + 1]):
             continue
-        if not _before_cutoff(*slots[i]):
+        if not _before_cutoff(*slots[i], best_cutoff=best_cutoff):
             continue
         combined = avgs[i] + avgs[i + 1]
         if combined < best_combined:
@@ -453,7 +476,10 @@ def _add_best_time_marker(
 
 # ── Chart 3 — Heatmap ─────────────────────────────────────────────────────
 
-def _chart_heatmap(data: list[tuple[datetime, int]]) -> go.Figure:
+def _chart_heatmap(
+    data: list[tuple[datetime, int]],
+    hours: dict[int, tuple[int, int]] = _HOURS_OERLIKON,
+) -> go.Figure:
     """Day-of-week × 15-min heatmap.  Cells outside opening hours are null."""
 
     grid: dict[tuple[int, int, int], list[int]] = defaultdict(list)
@@ -469,7 +495,7 @@ def _chart_heatmap(data: list[tuple[datetime, int]]) -> go.Figure:
     for dow in range(7):
         row: list[float | None] = []
         for h, m in slots:
-            if not _is_open(dow, h, m):
+            if not _is_open(dow, h, m, hours=hours):
                 row.append(None)
             else:
                 v = grid.get((dow, h, m), [])
@@ -508,7 +534,10 @@ def _chart_heatmap(data: list[tuple[datetime, int]]) -> go.Figure:
 
 # ── Chart 4 — Prediction ──────────────────────────────────────────────────
 
-def _chart_prediction(data: list[tuple[datetime, int]]) -> go.Figure:
+def _chart_prediction(
+    data: list[tuple[datetime, int]],
+    hours: dict[int, tuple[int, int]] = _HOURS_OERLIKON,
+) -> go.Figure:
     """Forecast for today & tomorrow using per-slot historical averages.
 
     The x-axis is a continuous datetime axis spanning from today's opening
@@ -532,11 +561,11 @@ def _chart_prediction(data: list[tuple[datetime, int]]) -> go.Figure:
         (t_dow, today, f"Today ({_DOW[t_dow]})", _ACCENT, "solid"),
         (tm_dow, tomorrow, f"Tomorrow ({_DOW[tm_dow]})", _WARN, "dash"),
     ]:
-        oh, ch = _HOURS[dow]
+        oh, ch = hours[dow]
         xs, means, hi, lo = [], [], [], []
 
         for h, m in _all_slots():
-            if not _is_open(dow, h, m):
+            if not _is_open(dow, h, m, hours=hours):
                 continue
             v = grid.get((dow, h, m), [])
             if not v:
@@ -601,8 +630,8 @@ def _chart_prediction(data: list[tuple[datetime, int]]) -> go.Figure:
     )
 
     # x-axis spans from today's opening to tomorrow's closing
-    t_oh, _ = _HOURS[t_dow]
-    _, tm_ch = _HOURS[tm_dow]
+    t_oh, _ = hours[t_dow]
+    _, tm_ch = hours[tm_dow]
     x_start = (datetime(today.year, today.month, today.day,
                         t_oh, 0, tzinfo=_TZ) - timedelta(minutes=15))
     x_end = (datetime(tomorrow.year, tomorrow.month, tomorrow.day,
@@ -671,11 +700,12 @@ def _assemble_page(
     loc_label  = "Hallenbad Oerlikon" if is_oerlikon else "Hallenbad City"
     loc_uid    = "SSD-7" if is_oerlikon else "SSD-4"
     other_loc  = "city" if is_oerlikon else "oerlikon"
+    loc_hours  = _LOCATION_HOURS[location]
 
     now = datetime.now(_TZ)
     now_str = now.strftime("%H:%M %Z, %a %d %b %Y")
     dow = now.weekday()
-    oh, ch = _HOURS[dow]
+    oh, ch = loc_hours[dow]
     is_open = oh <= now.hour < ch
 
     status_cls = "open" if is_open else "closed"
@@ -685,8 +715,23 @@ def _assemble_page(
     else:
         # Find next opening
         next_dow = (dow + 1) % 7
-        next_oh, _ = _HOURS[next_dow]
+        next_oh, _ = loc_hours[next_dow]
         status_text = f"Closed · opens {_DOW[next_dow]} at {next_oh:02d}:00"
+
+    # Öffnungszeiten HTML for this location
+    if is_oerlikon:
+        hours_html = """
+        <tr><td>Mo</td><td>06 – 20 Uhr</td></tr>
+        <tr><td>Di</td><td>06 – 20 Uhr</td></tr>
+        <tr><td>Mi</td><td>06 – 22 Uhr</td></tr>
+        <tr class="note"><td></td><td>Kinderspielnachmittag 14 – 16 Uhr</td></tr>
+        <tr><td>Do</td><td>06 – 20 Uhr</td></tr>
+        <tr><td>Fr</td><td>06 – 22 Uhr</td></tr>
+        <tr><td>Sa</td><td>06 – 22 Uhr</td></tr>
+        <tr><td>So</td><td>06 – 22 Uhr</td></tr>"""
+    else:
+        hours_html = """
+        <tr><td>Mo – So</td><td>06 – 22 Uhr</td></tr>"""
 
     # Render chart divs with known IDs
     tl_html = fig_tl.to_html(
@@ -880,15 +925,7 @@ def _assemble_page(
   <div class="info-row">
     <div class="info-card">
       <h3>&Ouml;ffnungszeiten</h3>
-      <table class="hours-tbl">
-        <tr><td>Mo</td><td>06 – 20 Uhr</td></tr>
-        <tr><td>Di</td><td>06 – 20 Uhr</td></tr>
-        <tr><td>Mi</td><td>06 – 22 Uhr</td></tr>
-        <tr class="note"><td></td><td>Kinderspielnachmittag 14 – 16 Uhr</td></tr>
-        <tr><td>Do</td><td>06 – 20 Uhr</td></tr>
-        <tr><td>Fr</td><td>06 – 22 Uhr</td></tr>
-        <tr><td>Sa</td><td>06 – 22 Uhr</td></tr>
-        <tr><td>So</td><td>06 – 22 Uhr</td></tr>
+      <table class="hours-tbl">{hours_html}
       </table>
       <div style="margin-top:6px;font-size:0.76em;color:{_MUTED}">
         Letzter Einlass 30 Min. vor Schluss &middot;
@@ -1175,6 +1212,9 @@ def build_dashboard_html(lookback_days: int = 30, location: str = "oerlikon") ->
     if location not in ("oerlikon", "city"):
         location = "oerlikon"
 
+    hours = _LOCATION_HOURS[location]
+    best_cutoff = _BEST_CUTOFF[location]
+
     readings = _fetch_readings(lookback_days)
     if not readings:
         return _empty_page("No occupancy data found yet — check back later.")
@@ -1184,10 +1224,10 @@ def build_dashboard_html(lookback_days: int = 30, location: str = "oerlikon") ->
         return _empty_page("Could not parse any readings.")
 
     return _assemble_page(
-        _chart_timeline(parsed),
-        _chart_best_time(parsed),
-        _chart_heatmap(parsed),
-        _chart_prediction(parsed),
+        _chart_timeline(parsed, hours=hours),
+        _chart_best_time(parsed, hours=hours, best_cutoff=best_cutoff),
+        _chart_heatmap(parsed, hours=hours),
+        _chart_prediction(parsed, hours=hours),
         len(parsed),
         lookback_days,
         raw_data=parsed,
