@@ -5,10 +5,6 @@ terraform {
       source  = "hashicorp/azurerm"
       version = "~> 4.0"
     }
-    random = {
-      source  = "hashicorp/random"
-      version = "~> 3.0"
-    }
   }
 }
 
@@ -17,23 +13,10 @@ provider "azurerm" {
   subscription_id = var.subscription_id
 }
 
-provider "random" {}
-
-# Stable random suffix for the Function App runtime storage account name
-resource "random_string" "storage_suffix" {
-  length  = 4
-  special = false
-  upper   = false
-  keepers = {
-    project_name = var.project_name
-    environment  = var.environment
-  }
-}
-
 locals {
   project_name          = var.project_name
   environment           = var.environment
-  function_storage_name = replace("badfuncsa${random_string.storage_suffix.result}", "-", "")
+  function_storage_name = "badfuncsa3yz1"  # fixed — do not change; storage account names are immutable
 }
 
 # ── Resource Group ────────────────────────────────────────────────────────────
