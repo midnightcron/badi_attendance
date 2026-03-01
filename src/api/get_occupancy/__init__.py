@@ -1,10 +1,10 @@
 """
 Azure Function: HTTP API for occupancy data.
 
-GET /api/occupancy?days=7&resolution=5min
+GET /api/occupancy?days=7&resolution=5min&location=oerlikon
 
-Returns aggregated occupancy data from blob storage CSVs.
-Supports date-range queries and downsampling for dashboard use.
+Returns aggregated occupancy data from Azure Table Storage.
+Supports date-range queries and multiple resolutions.
 """
 
 import azure.functions as func
@@ -25,7 +25,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
     Query params:
         days        - Number of days to look back (default: 7, max: 30)
-        resolution  - Aggregation: 'raw', '5min' (default), '1hour', '1day'
+        resolution  - Aggregation: 'raw', '5min' (default), '15min', '1hour', '1day'
         date        - Specific date YYYY-MM-DD (overrides days)
 
     Returns:
@@ -37,10 +37,10 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         resolution = req.params.get("resolution", "5min")
         specific_date = req.params.get("date")
 
-        if resolution not in ("raw", "5min", "1hour", "1day"):
+        if resolution not in ("raw", "5min", "15min", "1hour", "1day"):
             return _json_response(
                 {"error": f"Invalid resolution: {resolution}. "
-                 "Use: raw, 5min, 1hour, 1day"},
+                 "Use: raw, 5min, 15min, 1hour, 1day"},
                 status_code=400,
             )
 
@@ -77,6 +77,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             data = raw_data
         elif resolution == "5min":
             data = _aggregate(raw_data, minutes=5)
+        elif resolution == "15min":
+            data = _aggregate(raw_data, minutes=15)
         elif resolution == "1hour":
             data = _aggregate(raw_data, minutes=60)
         elif resolution == "1day":
