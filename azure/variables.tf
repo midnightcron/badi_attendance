@@ -25,3 +25,15 @@ variable "subscription_id" {
   description = "Azure subscription ID"
   type        = string
 }
+
+variable "aci_storage_account_name" {
+  description = "Name of the ACI storage account holding Table Storage occupancy data (managed by azure/collector-aci/)"
+  type        = string
+  default     = "badiacidevyb1a"
+}
+
+variable "aci_resource_group_name" {
+  description = "Resource group of the ACI storage account"
+  type        = string
+  default     = "badi-oerlikon-dev-aci-rg"
+}
