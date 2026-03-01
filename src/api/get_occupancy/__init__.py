@@ -8,8 +8,6 @@ Supports date-range queries and downsampling for dashboard use.
 """
 
 import azure.functions as func
-import csv
-import io
 import json
 import logging
 import os
@@ -60,8 +58,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             end_date = datetime.now(_TZ).replace(tzinfo=None)
             start_date = end_date - timedelta(days=days)
 
-        # Read data from blobs
-        raw_data = _read_blobs(start_date, end_date)
+        # Read data from Table Storage
+        raw_data = _read_table(start_date, end_date)
 
         if not raw_data:
             return _json_response({
@@ -103,67 +101,45 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         )
 
 
-def _get_blob_service_client():
-    """Get a BlobServiceClient using configured connection string."""
-    from azure.storage.blob import BlobServiceClient
+def _read_table(start_date: datetime, end_date: datetime) -> list:
+    """
+    Read occupancy rows from Azure Table Storage for the given date range.
+
+    Each entity has PartitionKey (date), RowKey (time), occupancy_oerlikon, occupancy_city.
+    """
+    from azure.data.tables import TableServiceClient
 
     conn_str = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
     if not conn_str:
         aws = os.getenv("AzureWebJobsStorage", "")
         if aws and aws != "UseDevelopmentStorage=true":
             conn_str = aws
-
     if not conn_str:
         raise ValueError("No storage connection string configured")
 
-    return BlobServiceClient.from_connection_string(conn_str)
-
-
-def _read_blobs(start_date: datetime, end_date: datetime) -> list:
-    """
-    Read all CSV blobs in the date range.
-
-    Blob naming convention: YYYY-MM-DD/occupancy_HH_MM.csv
-    Each CSV has: timestamp,occupancy
-    """
-    container_name = os.getenv("BLOB_CONTAINER_NAME", "occupancy-data")
-    blob_service = _get_blob_service_client()
-    container_client = blob_service.get_container_client(container_name)
+    table_name = os.getenv("TABLE_NAME", "occupancy")
+    svc = TableServiceClient.from_connection_string(conn_str)
+    table = svc.get_table_client(table_name)
 
     all_readings = []
     current_date = start_date.date()
     end_date_only = end_date.date()
 
     while current_date <= end_date_only:
-        prefix = current_date.strftime("%Y-%m-%d/")
-        logger.info(f"Scanning blobs with prefix: {prefix}")
-
+        pk = current_date.isoformat()
+        logger.info(f"Querying table for PartitionKey={pk}")
         try:
-            blobs = container_client.list_blobs(name_starts_with=prefix)
-            for blob in blobs:
-                try:
-                    blob_client = container_client.get_blob_client(blob.name)
-                    content = blob_client.download_blob().readall().decode("utf-8")
-
-                    reader = csv.DictReader(io.StringIO(content))
-                    for row in reader:
-                        ts_str = row.get("timestamp", "")
-                        occ_str = row.get("occupancy", "")
-                        if ts_str and occ_str:
-                            all_readings.append({
-                                "timestamp": ts_str,
-                                "occupancy": int(float(occ_str)),
-                            })
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to read blob {blob.name}: {e}"
-                    )
-        except Exception as e:
-            logger.warning(f"Failed to list blobs for {prefix}: {e}")
-
+            for e in table.query_entities(f"PartitionKey eq '{pk}'"):
+                ts = f"{e['PartitionKey']}T{e['RowKey']}"
+                all_readings.append({
+                    "timestamp": ts,
+                    "occupancy_oerlikon": e.get("occupancy_oerlikon"),
+                    "occupancy_city": e.get("occupancy_city"),
+                })
+        except Exception as ex:
+            logger.warning(f"Failed to query table for {pk}: {ex}")
         current_date += timedelta(days=1)
 
-    # Sort by timestamp
     all_readings.sort(key=lambda x: x["timestamp"])
     return all_readings
 
@@ -172,24 +148,22 @@ def _aggregate(readings: list, minutes: int) -> list:
     """
     Aggregate raw readings into time buckets.
 
-    For each bucket, compute avg, min, max occupancy.
+    For each bucket, compute avg, min, max for both occupancy columns.
     Timestamp is set to the bucket start.
     """
     if not readings:
         return []
 
     bucket_seconds = minutes * 60
-    buckets = {}
+    buckets: dict[str, dict] = {}
 
     for r in readings:
         try:
-            # Parse ISO timestamp — timestamps are CET (Europe/Zurich)
             ts_str = r["timestamp"]
             ts = datetime.fromisoformat(ts_str)
             if ts.tzinfo is not None:
                 ts = ts.astimezone(_TZ).replace(tzinfo=None)
 
-            # Floor to bucket boundary
             epoch = ts.timestamp()
             bucket_epoch = (int(epoch) // bucket_seconds) * bucket_seconds
             bucket_key = datetime.fromtimestamp(
@@ -197,24 +171,33 @@ def _aggregate(readings: list, minutes: int) -> list:
             ).strftime("%Y-%m-%dT%H:%M:%S")
 
             if bucket_key not in buckets:
-                buckets[bucket_key] = []
-            buckets[bucket_key].append(r["occupancy"])
+                buckets[bucket_key] = {"oerlikon": [], "city": []}
+
+            occ_o = r.get("occupancy_oerlikon")
+            occ_c = r.get("occupancy_city")
+            if occ_o is not None:
+                buckets[bucket_key]["oerlikon"].append(int(occ_o))
+            if occ_c is not None:
+                buckets[bucket_key]["city"].append(int(occ_c))
 
         except (ValueError, KeyError) as e:
             logger.debug(f"Skipping reading: {e}")
             continue
 
-    # Build aggregated output
     result = []
     for bucket_ts in sorted(buckets.keys()):
-        values = buckets[bucket_ts]
-        result.append({
-            "timestamp": bucket_ts,
-            "occupancy": round(sum(values) / len(values), 1),
-            "min": min(values),
-            "max": max(values),
-            "readings": len(values),
-        })
+        o = buckets[bucket_ts]["oerlikon"]
+        c = buckets[bucket_ts]["city"]
+        entry: dict = {"timestamp": bucket_ts, "readings": max(len(o), len(c))}
+        if o:
+            entry["occupancy_oerlikon"] = round(sum(o) / len(o), 1)
+            entry["occupancy_oerlikon_min"] = min(o)
+            entry["occupancy_oerlikon_max"] = max(o)
+        if c:
+            entry["occupancy_city"] = round(sum(c) / len(c), 1)
+            entry["occupancy_city_min"] = min(c)
+            entry["occupancy_city_max"] = max(c)
+        result.append(entry)
 
     return result
 
