@@ -5,10 +5,6 @@ terraform {
       source  = "hashicorp/azurerm"
       version = "~> 4.0"
     }
-    random = {
-      source  = "hashicorp/random"
-      version = "~> 3.0"
-    }
   }
 }
 
@@ -17,23 +13,10 @@ provider "azurerm" {
   subscription_id = var.subscription_id
 }
 
-provider "random" {}
-
-# Stable random suffix for storage account names
-resource "random_string" "suffix" {
-  length  = 4
-  special = false
-  upper   = false
-  keepers = {
-    project_name = var.project_name
-    environment  = var.environment
-  }
-}
-
 locals {
   prefix               = "${var.project_name}-${var.environment}"
-  storage_account_name = replace("badiaci${var.environment}${random_string.suffix.result}", "-", "")
-  acr_name             = replace("badiaci${var.environment}${random_string.suffix.result}", "-", "")
+  storage_account_name = "badiacidevyb1a"  # fixed — do not change; storage account names are immutable
+  acr_name             = "badiacidevyb1a"  # fixed — matches storage account suffix
 }
 
 # ─── Resource Group ────────────────────────────────────────────────
@@ -54,14 +37,14 @@ resource "azurerm_storage_account" "storage" {
   access_tier              = "Hot"
 }
 
-resource "azurerm_storage_container" "occupancy_data" {
-  name               = "occupancy-data"
-  storage_account_id = azurerm_storage_account.storage.id
-}
-
 resource "azurerm_storage_table" "occupancy" {
   name                 = "occupancy"
   storage_account_name = azurerm_storage_account.storage.name
+}
+
+resource "azurerm_storage_container" "occupancy_parquet" {
+  name               = "occupancy-parquet"
+  storage_account_id = azurerm_storage_account.storage.id
 }
 
 # ─── Container Registry (Basic SKU — ~$5/month) ──────────────────
@@ -128,5 +111,15 @@ resource "azurerm_container_group" "collector" {
     project     = var.project_name
     environment = var.environment
     component   = "collector-aci"
+  }
+
+  # Terraform cannot read back secure_environment_variables or diagnostics workspace_key
+  # from the Azure API so they always appear as diffs. Ignore top-level blocks that
+  # contain sensitive values to prevent unintended container restarts.
+  lifecycle {
+    ignore_changes = [
+      diagnostics,
+      image_registry_credential,
+    ]
   }
 }

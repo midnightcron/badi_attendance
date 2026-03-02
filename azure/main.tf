@@ -95,6 +95,7 @@ resource "azurerm_function_app_flex_consumption" "api" {
   app_settings = {
     AZURE_STORAGE_CONNECTION_STRING = data.azurerm_storage_account.aci_storage.primary_connection_string
     TABLE_NAME                      = "occupancy"
+    PARQUET_CONTAINER_NAME          = "occupancy-parquet"
     AzureWebJobsStorage             = azurerm_storage_account.function_storage.primary_connection_string
   }
 }
