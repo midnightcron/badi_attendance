@@ -10,8 +10,6 @@ Charts (all Plotly, server-rendered):
 
 from __future__ import annotations
 
-import csv
-import io
 import json
 import logging
 import math
@@ -33,8 +31,8 @@ _DOW = [
     "Friday", "Saturday", "Sunday",
 ]
 
-# Official opening hours (open_hour, close_hour)
-_HOURS: dict[int, tuple[int, int]] = {
+# Official opening hours (open_hour, close_hour) per location
+_HOURS_OERLIKON: dict[int, tuple[int, int]] = {
     0: (6, 20),  # Montag
     1: (6, 20),  # Dienstag
     2: (6, 22),  # Mittwoch  (Kinderspielnachmittag 14–16)
@@ -43,13 +41,23 @@ _HOURS: dict[int, tuple[int, int]] = {
     5: (6, 22),  # Samstag
     6: (6, 22),  # Sonntag
 }
+_HOURS_CITY: dict[int, tuple[int, int]] = {i: (6, 22) for i in range(7)}  # Mon–Sun 06–22
 
-_OPEN = 6   # earliest opening across all days
-_CLOSE = 22  # latest closing across all days
+_LOCATION_HOURS: dict[str, dict[int, tuple[int, int]]] = {
+    "oerlikon": _HOURS_OERLIKON,
+    "city":     _HOURS_CITY,
+}
 
-# Best-time recommendation: ≤ 30 min before earliest close (20:00) → 19:30
-# (assumes a 30-minute swimming slot; start must allow full slot before close)
-_BEST_H, _BEST_M = 19, 30
+_OPEN = 6   # earliest opening across all locations/days
+_CLOSE = 22  # latest closing across all locations/days
+
+# Best-time cutoff: 30 min before the earliest close on any day
+# Oerlikon: 30 min before 20:00 → 19:30; City: 30 min before 22:00 → 21:30
+_BEST_CUTOFF: dict[str, tuple[int, int]] = {
+    "oerlikon": (19, 30),
+    "city":     (21, 30),
+}
+_BEST_H, _BEST_M = 19, 30  # Oerlikon default (kept for internal use)
 
 # ── Dark-mode colour palette (GitHub dark) ─────────────────────────────────
 
@@ -79,14 +87,14 @@ def _all_slots() -> list[tuple[int, int]]:
     return slots
 
 
-def _is_open(dow: int, h: int, m: int) -> bool:
-    oh, ch = _HOURS[dow]
+def _is_open(dow: int, h: int, m: int, hours: dict[int, tuple[int, int]] = _HOURS_OERLIKON) -> bool:
+    oh, ch = hours[dow]
     return oh <= h + m / 60 < ch
 
 
-def _before_cutoff(h: int, m: int) -> bool:
-    """True when the slot is ≤ 19:15 (45 min before earliest close)."""
-    return (h, m) <= (_BEST_H, _BEST_M)
+def _before_cutoff(h: int, m: int, best_cutoff: tuple[int, int] = (_BEST_H, _BEST_M)) -> bool:
+    """True when the slot start is early enough to complete a 30-min swim before close."""
+    return (h, m) <= best_cutoff
 
 
 def _bin15(dt: datetime) -> tuple[int, int]:
@@ -121,11 +129,11 @@ def _base(**kw) -> dict:
 # ── Data fetching ──────────────────────────────────────────────────────────
 
 def _fetch_readings(lookback_days: int) -> list[dict]:
-    """Read CSV blobs for the last N days from Azure Blob Storage."""
+    """Read occupancy data from Azure Table Storage."""
     try:
-        from azure.storage.blob import BlobServiceClient
+        from azure.data.tables import TableServiceClient
     except ImportError:
-        logger.error("azure-storage-blob not installed")
+        logger.error("azure-data-tables not installed")
         return []
 
     conn = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
@@ -136,9 +144,9 @@ def _fetch_readings(lookback_days: int) -> list[dict]:
     if not conn:
         return []
 
-    container = os.getenv("BLOB_CONTAINER_NAME", "occupancy-data")
-    svc = BlobServiceClient.from_connection_string(conn)
-    cc = svc.get_container_client(container)
+    table_name = os.getenv("TABLE_NAME", "occupancy")
+    svc = TableServiceClient.from_connection_string(conn)
+    table = svc.get_table_client(table_name)
 
     rows: list[dict] = []
     today = datetime.now(_TZ).date()
@@ -146,49 +154,46 @@ def _fetch_readings(lookback_days: int) -> list[dict]:
 
     for offset in range(lookback_days + 1):
         day = today - timedelta(days=offset)
-        prefix = day.strftime("%Y-%m-%d/")
-        found = False
+        pk = day.isoformat()
         try:
-            for blob in cc.list_blobs(name_starts_with=prefix):
-                found = True
-                try:
-                    data = (cc.get_blob_client(blob.name)
-                            .download_blob().readall().decode())
-                    for r in csv.DictReader(io.StringIO(data)):
-                        ts = r.get("timestamp", "")
-                        occ = r.get("occupancy", "")
-                        if ts and occ:
-                            rows.append({
-                                "timestamp": ts,
-                                "occupancy": int(float(occ)),
-                            })
-                except Exception:
-                    pass
+            entities = list(table.query_entities(f"PartitionKey eq '{pk}'"))
+            if entities:
+                loaded_days.append(pk)
+            for e in entities:
+                occ_o = e.get("occupancy_oerlikon")
+                occ_c = e.get("occupancy_city")
+                if occ_o is None and occ_c is None:
+                    continue
+                # Reconstruct naive CET timestamp from PartitionKey + RowKey
+                ts = f"{e['PartitionKey']}T{e['RowKey']}"
+                rows.append({
+                    "timestamp": ts,
+                    "occupancy_oerlikon": int(occ_o) if occ_o is not None else None,
+                    "occupancy_city": int(occ_c) if occ_c is not None else None,
+                })
         except Exception:
             pass
-        if found:
-            loaded_days.append(day.isoformat())
 
     logger.info(f"Dashboard loaded data for days: {loaded_days}")
     rows.sort(key=lambda r: r["timestamp"])
     return rows
 
 
-def _parse(rows: list[dict]) -> list[tuple[datetime, int]]:
-    """Raw dicts → (naive local datetime, occupancy) in Europe/Zurich.
-
-    Timestamps in blob CSVs are already CET (Europe/Zurich).  If an offset
-    is present we convert; otherwise the value is used as-is.
-    """
+def _parse(rows: list[dict], location: str = "oerlikon") -> list[tuple[datetime, int]]:
+    """Raw dicts → (naive local datetime, occupancy) in Europe/Zurich."""
+    key = f"occupancy_{location}"
     out: list[tuple[datetime, int]] = []
     for r in rows:
+        occ = r.get(key)
+        if occ is None:
+            continue
         s = r["timestamp"]
         try:
             dt = datetime.fromisoformat(s)
             if dt.tzinfo is not None:
                 dt = dt.astimezone(_TZ)
             dt = dt.replace(tzinfo=None)
-            out.append((dt, r["occupancy"]))
+            out.append((dt, occ))
         except ValueError:
             continue
     return out
@@ -196,7 +201,10 @@ def _parse(rows: list[dict]) -> list[tuple[datetime, int]]:
 
 # ── Chart 1 — Timeline ────────────────────────────────────────────────────
 
-def _chart_timeline(data: list[tuple[datetime, int]]) -> go.Figure:
+def _chart_timeline(
+    data: list[tuple[datetime, int]],
+    hours: dict[int, tuple[int, int]] = _HOURS_OERLIKON,
+) -> go.Figure:
     """Line chart of raw occupancy (5-min buckets) with opening-hour shapes."""
 
     # 5-min bucketing
@@ -227,7 +235,7 @@ def _chart_timeline(data: list[tuple[datetime, int]]) -> go.Figure:
         d0, d1 = ts[0].date(), ts[-1].date()
         cur = d0
         while cur <= d1:
-            oh, ch = _HOURS[cur.weekday()]
+            oh, ch = hours[cur.weekday()]
             shapes.append(dict(
                 type="rect",
                 x0=datetime(cur.year, cur.month, cur.day, oh).isoformat(),
@@ -258,7 +266,11 @@ def _chart_timeline(data: list[tuple[datetime, int]]) -> go.Figure:
 
 # ── Chart 2 — Best time to visit ──────────────────────────────────────────
 
-def _chart_best_time(data: list[tuple[datetime, int]]) -> go.Figure:
+def _chart_best_time(
+    data: list[tuple[datetime, int]],
+    hours: dict[int, tuple[int, int]] = _HOURS_OERLIKON,
+    best_cutoff: tuple[int, int] = (_BEST_H, _BEST_M),
+) -> go.Figure:
     """
     Bar chart with 4 views controlled by JS buttons:
 
@@ -290,17 +302,21 @@ def _chart_best_time(data: list[tuple[datetime, int]]) -> go.Figure:
     ))
 
     # ── Best-time marker ──
-    _add_best_time_marker(fig, slots, labels, week_avg)
+    _add_best_time_marker(fig, slots, labels, week_avg, hours=hours, best_cutoff=best_cutoff)
 
-    # ── Closing-time marker at 20:00 ──
-    fig.add_vline(
-        x="20:00", line_dash="dash", line_color=_WARN, line_width=1,
-    )
-    fig.add_annotation(
-        x="20:00", y=1.02, yref="paper",
-        text="Closes 20:00 (Mon/Tue/Thu)",
-        showarrow=False, font=dict(color=_WARN, size=9),
-    )
+    # ── Early-closing marker (only when some days close before 22:00) ──
+    early_closes = {ch for _oh, ch in hours.values() if ch < _CLOSE}
+    if early_closes:
+        early_ch = min(early_closes)
+        close_days = "/".join(
+            _DOW[d][:3] for d, (_oh, ch) in sorted(hours.items()) if ch == early_ch
+        )
+        fig.add_vline(x=f"{early_ch:02d}:00", line_dash="dash", line_color=_WARN, line_width=1)
+        fig.add_annotation(
+            x=f"{early_ch:02d}:00", y=1.02, yref="paper",
+            text=f"Closes {early_ch}:00 ({close_days})",
+            showarrow=False, font=dict(color=_WARN, size=9),
+        )
 
     hticks = [_slot(h, 0) for h in range(_OPEN, _CLOSE + 1)]
     fig.update_layout(**_base(
@@ -421,10 +437,12 @@ def _add_best_time_marker(
     slots: list[tuple[int, int]],
     labels: list[str],
     avgs: list[float],
+    hours: dict[int, tuple[int, int]] = _HOURS_OERLIKON,
+    best_cutoff: tuple[int, int] = (_BEST_H, _BEST_M),
 ) -> None:
     """Annotate the best 30-min swim window."""
     slot_ok = [
-        a > 0 and _is_open(0, *s)
+        a > 0 and _is_open(0, *s, hours=hours)
         for s, a in zip(slots, avgs)
     ]
     best_start: int | None = None
@@ -432,7 +450,7 @@ def _add_best_time_marker(
     for i in range(len(slots) - 1):
         if not (slot_ok[i] and slot_ok[i + 1]):
             continue
-        if not _before_cutoff(*slots[i]):
+        if not _before_cutoff(*slots[i], best_cutoff=best_cutoff):
             continue
         combined = avgs[i] + avgs[i + 1]
         if combined < best_combined:
@@ -458,7 +476,10 @@ def _add_best_time_marker(
 
 # ── Chart 3 — Heatmap ─────────────────────────────────────────────────────
 
-def _chart_heatmap(data: list[tuple[datetime, int]]) -> go.Figure:
+def _chart_heatmap(
+    data: list[tuple[datetime, int]],
+    hours: dict[int, tuple[int, int]] = _HOURS_OERLIKON,
+) -> go.Figure:
     """Day-of-week × 15-min heatmap.  Cells outside opening hours are null."""
 
     grid: dict[tuple[int, int, int], list[int]] = defaultdict(list)
@@ -474,7 +495,7 @@ def _chart_heatmap(data: list[tuple[datetime, int]]) -> go.Figure:
     for dow in range(7):
         row: list[float | None] = []
         for h, m in slots:
-            if not _is_open(dow, h, m):
+            if not _is_open(dow, h, m, hours=hours):
                 row.append(None)
             else:
                 v = grid.get((dow, h, m), [])
@@ -513,7 +534,10 @@ def _chart_heatmap(data: list[tuple[datetime, int]]) -> go.Figure:
 
 # ── Chart 4 — Prediction ──────────────────────────────────────────────────
 
-def _chart_prediction(data: list[tuple[datetime, int]]) -> go.Figure:
+def _chart_prediction(
+    data: list[tuple[datetime, int]],
+    hours: dict[int, tuple[int, int]] = _HOURS_OERLIKON,
+) -> go.Figure:
     """Forecast for today & tomorrow using per-slot historical averages.
 
     The x-axis is a continuous datetime axis spanning from today's opening
@@ -537,11 +561,11 @@ def _chart_prediction(data: list[tuple[datetime, int]]) -> go.Figure:
         (t_dow, today, f"Today ({_DOW[t_dow]})", _ACCENT, "solid"),
         (tm_dow, tomorrow, f"Tomorrow ({_DOW[tm_dow]})", _WARN, "dash"),
     ]:
-        oh, ch = _HOURS[dow]
+        oh, ch = hours[dow]
         xs, means, hi, lo = [], [], [], []
 
         for h, m in _all_slots():
-            if not _is_open(dow, h, m):
+            if not _is_open(dow, h, m, hours=hours):
                 continue
             v = grid.get((dow, h, m), [])
             if not v:
@@ -606,8 +630,8 @@ def _chart_prediction(data: list[tuple[datetime, int]]) -> go.Figure:
     )
 
     # x-axis spans from today's opening to tomorrow's closing
-    t_oh, _ = _HOURS[t_dow]
-    _, tm_ch = _HOURS[tm_dow]
+    t_oh, _ = hours[t_dow]
+    _, tm_ch = hours[tm_dow]
     x_start = (datetime(today.year, today.month, today.day,
                         t_oh, 0, tzinfo=_TZ) - timedelta(minutes=15))
     x_end = (datetime(tomorrow.year, tomorrow.month, tomorrow.day,
@@ -668,13 +692,20 @@ def _assemble_page(
     lookback_days: int,
     raw_data: list[tuple[datetime, int]] | None = None,
     bt_data: dict | None = None,
+    location: str = "oerlikon",
 ) -> str:
     """Combine all charts into one dark-mode HTML page."""
+
+    is_oerlikon = location == "oerlikon"
+    loc_label  = "Hallenbad Oerlikon" if is_oerlikon else "Hallenbad City"
+    loc_uid    = "SSD-7" if is_oerlikon else "SSD-4"
+    other_loc  = "city" if is_oerlikon else "oerlikon"
+    loc_hours  = _LOCATION_HOURS[location]
 
     now = datetime.now(_TZ)
     now_str = now.strftime("%H:%M %Z, %a %d %b %Y")
     dow = now.weekday()
-    oh, ch = _HOURS[dow]
+    oh, ch = loc_hours[dow]
     is_open = oh <= now.hour < ch
 
     status_cls = "open" if is_open else "closed"
@@ -684,8 +715,23 @@ def _assemble_page(
     else:
         # Find next opening
         next_dow = (dow + 1) % 7
-        next_oh, _ = _HOURS[next_dow]
+        next_oh, _ = loc_hours[next_dow]
         status_text = f"Closed · opens {_DOW[next_dow]} at {next_oh:02d}:00"
+
+    # Öffnungszeiten HTML for this location
+    if is_oerlikon:
+        hours_html = """
+        <tr><td>Mo</td><td>06 – 20 Uhr</td></tr>
+        <tr><td>Di</td><td>06 – 20 Uhr</td></tr>
+        <tr><td>Mi</td><td>06 – 22 Uhr</td></tr>
+        <tr class="note"><td></td><td>Kinderspielnachmittag 14 – 16 Uhr</td></tr>
+        <tr><td>Do</td><td>06 – 20 Uhr</td></tr>
+        <tr><td>Fr</td><td>06 – 22 Uhr</td></tr>
+        <tr><td>Sa</td><td>06 – 22 Uhr</td></tr>
+        <tr><td>So</td><td>06 – 22 Uhr</td></tr>"""
+    else:
+        hours_html = """
+        <tr><td>Mo – So</td><td>06 – 22 Uhr</td></tr>"""
 
     # Render chart divs with known IDs
     tl_html = fig_tl.to_html(
@@ -829,6 +875,24 @@ def _assemble_page(
   footer a {{ color: {_ACCENT}; text-decoration: none; }}
   footer a:hover {{ text-decoration: underline; }}
 
+  /* ── Location toggle ── */
+  .loc-toggle {{
+    display: inline-flex; border: 1px solid {_BORDER};
+    border-radius: 8px; overflow: hidden;
+  }}
+  .ltoggle {{
+    padding: 5px 16px; font-size: 0.82em; font-weight: 500;
+    font-family: inherit; cursor: pointer; text-decoration: none;
+    color: {_MUTED}; background: transparent; transition: all .15s;
+    white-space: nowrap;
+  }}
+  .ltoggle:hover {{ color: {_TEXT}; }}
+  .ltoggle.active {{
+    background: rgba({accent_rgb},0.15);
+    color: {_ACCENT};
+  }}
+  .ltoggle + .ltoggle {{ border-left: 1px solid {_BORDER}; }}
+
   /* Plotly tweaks */
   .js-plotly-plot .plotly .modebar {{ opacity: 0.4; }}
   .js-plotly-plot .plotly .modebar:hover {{ opacity: 1; }}
@@ -842,12 +906,18 @@ def _assemble_page(
   <header>
     <div class="header-row">
       <div>
-        <h1>\U0001f3ca Badi Oerlikon</h1>
+        <h1>\U0001f3ca {loc_label}</h1>
         <div class="subtitle">
           {n_readings:,} readings &middot; {lookback_days}-day window &middot; {now_str}
         </div>
       </div>
-      <span class="badge {status_cls}">{status_icon} {status_text}</span>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <div class="loc-toggle">
+          <a class="ltoggle {'active' if is_oerlikon else ''}" href="?location=oerlikon">Hallenbad Oerlikon</a>
+          <a class="ltoggle {'' if is_oerlikon else 'active'}" href="?location=city">Hallenbad City</a>
+        </div>
+        <span class="badge {status_cls}">{status_icon} {status_text}</span>
+      </div>
     </div>
   </header>
 
@@ -855,15 +925,7 @@ def _assemble_page(
   <div class="info-row">
     <div class="info-card">
       <h3>&Ouml;ffnungszeiten</h3>
-      <table class="hours-tbl">
-        <tr><td>Mo</td><td>06 – 20 Uhr</td></tr>
-        <tr><td>Di</td><td>06 – 20 Uhr</td></tr>
-        <tr><td>Mi</td><td>06 – 22 Uhr</td></tr>
-        <tr class="note"><td></td><td>Kinderspielnachmittag 14 – 16 Uhr</td></tr>
-        <tr><td>Do</td><td>06 – 20 Uhr</td></tr>
-        <tr><td>Fr</td><td>06 – 22 Uhr</td></tr>
-        <tr><td>Sa</td><td>06 – 22 Uhr</td></tr>
-        <tr><td>So</td><td>06 – 22 Uhr</td></tr>
+      <table class="hours-tbl">{hours_html}
       </table>
       <div style="margin-top:6px;font-size:0.76em;color:{_MUTED}">
         Letzter Einlass 30 Min. vor Schluss &middot;
@@ -952,7 +1014,7 @@ def _assemble_page(
   </div>
 
   <footer>
-    Data: CrowdMonitor WebSocket &middot; Badi Oerlikon (SSD-7) &middot;
+    Data: CrowdMonitor WebSocket &middot; {loc_label} ({loc_uid}) &middot;
     <a href="/api/occupancy?days=7">JSON API</a> &middot;
     <a href="/api/health_check">Health</a>
   </footer>
@@ -1145,23 +1207,30 @@ def _empty_page(msg: str) -> str:
 
 # ── Public entry point ─────────────────────────────────────────────────────
 
-def build_dashboard_html(lookback_days: int = 30) -> str:
+def build_dashboard_html(lookback_days: int = 30, location: str = "oerlikon") -> str:
     """Fetch data, build charts, return complete HTML page."""
+    if location not in ("oerlikon", "city"):
+        location = "oerlikon"
+
+    hours = _LOCATION_HOURS[location]
+    best_cutoff = _BEST_CUTOFF[location]
+
     readings = _fetch_readings(lookback_days)
     if not readings:
         return _empty_page("No occupancy data found yet — check back later.")
 
-    parsed = _parse(readings)
+    parsed = _parse(readings, location)
     if not parsed:
         return _empty_page("Could not parse any readings.")
 
     return _assemble_page(
-        _chart_timeline(parsed),
-        _chart_best_time(parsed),
-        _chart_heatmap(parsed),
-        _chart_prediction(parsed),
+        _chart_timeline(parsed, hours=hours),
+        _chart_best_time(parsed, hours=hours, best_cutoff=best_cutoff),
+        _chart_heatmap(parsed, hours=hours),
+        _chart_prediction(parsed, hours=hours),
         len(parsed),
         lookback_days,
         raw_data=parsed,
         bt_data=_best_time_data(parsed),
+        location=location,
     )

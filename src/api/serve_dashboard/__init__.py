@@ -18,7 +18,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         from utils.dashboard_builder import build_dashboard_html
 
         days = min(int(req.params.get("days", "30")), 90)
-        html = build_dashboard_html(lookback_days=days)
+        location = req.params.get("location", "oerlikon")
+        html = build_dashboard_html(lookback_days=days, location=location)
 
         return func.HttpResponse(
             html,

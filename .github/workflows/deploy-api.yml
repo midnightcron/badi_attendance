@@ -43,7 +43,7 @@ jobs:
         run: |
           cd ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
           python -c "import sys; sys.path.insert(0, '.python_packages/lib/site-packages'); import plotly; print(f'plotly {plotly.__version__} OK')"
-          python -c "import sys; sys.path.insert(0, '.python_packages/lib/site-packages'); import azure.storage.blob; print('azure-storage-blob OK')"
+          python -c "import sys; sys.path.insert(0, '.python_packages/lib/site-packages'); import azure.data.tables; print('azure-data-tables OK')"
 
       - name: Zip artifact for deployment
         run: |
