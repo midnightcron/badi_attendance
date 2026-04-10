@@ -2,163 +2,232 @@
 
 ## System Design
 
-The Badi Oerlikon Occupancy Monitor is a serverless data-collection pipeline built on Azure Functions. It continuously ingests real-time occupancy data from a public WebSocket API and persists it as CSV files in Azure Blob Storage.
+The Badi Oerlikon Occupancy Monitor is a data-collection pipeline that continuously ingests
+real-time occupancy data from a public WebSocket API and persists it in Azure Table Storage.
+Two locations are monitored simultaneously: Hallenbad Oerlikon (SSD-7) and Hallenbad City (SSD-4).
 
 ### Components
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Azure Resource Group                          │
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │  Collector App (Flex Consumption, always_ready)           │   │
-│  │  Python 3.11 · badi-oerlikon-dev-collector                │   │
-│  │                                                            │   │
-│  │  Timer Triggers (leap-frog):                               │   │
-│  │    websocket_listener_even  :00,:10,:20,:30,:40,:50        │   │
-│  │    websocket_listener_odd   :05,:15,:25,:35,:45,:55        │   │
-│  └────────────────────┬─────────────────────────────────────┘   │
-│                       │                                          │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │  API App (Flex Consumption, scales to zero)               │   │
-│  │  Python 3.11 · badi-oerlikon-dev-api                      │   │
-│  │                                                            │   │
-│  │  HTTP Triggers:                                            │   │
-│  │    GET /api/health_check    Runtime health                 │   │
-│  │    GET /api/occupancy       Query historical data          │   │
-│  │    GET /api/dashboard       Plotly dashboard (Python)       │   │
-│  └────────────────────┬─────────────────────────────────────┘   │
-│                       │                                          │
-│          ┌────────────▼────────────┐                             │
-│          │   Storage Account       │    ← shared by both apps   │
-│          │   (Standard LRS)        │                             │
-│          │                         │                             │
-│          │  occupancy-data/        │                             │
-│          │    YYYY-MM-DD/          │                             │
-│          │      occupancy_HH_MM.csv│                             │
-│          └─────────────────────────┘                             │
-│                                                                  │
-│  ┌─────────────────────────┐                                    │
-│  │  Application Insights   │  Traces, exceptions, live metrics  │
-│  └─────────────────────────┘                                    │
-└─────────────────────────────────────────────────────────────────┘
+```text
+┌─────────────────────────────────────────────────────────────────────┐
+│  badi-oerlikon-dev-aci-rg                                           │
+│                                                                      │
+│  ┌──────────────────────────────┐   ┌────────────────────────────┐  │
+│  │  ACI Collector               │   │  Storage Account           │  │
+│  │  badi-oerlikon-dev-collector │──▶│  badiacidevyb1a            │  │
+│  │  Python 3.11, restart=Always │   │                            │  │
+│  │                              │   │  Tables:                   │  │
+│  │  • WebSocket listener        │   │    occupancy (raw)         │  │
+│  │    - SSD-7 Oerlikon          │   │    occupancypatterns       │  │
+│  │    - SSD-4 City              │   │  Containers:               │  │
+│  │  • Aggregator (02:00 CET)    │   │    occupancy-parquet       │  │
+│  └──────────────────────────────┘   └────────────────────────────┘  │
+│                                                                      │
+│  ┌──────────────────────────────┐                                    │
+│  │  ACR (badiacidevyb1a)        │  Docker image registry            │
+│  └──────────────────────────────┘                                    │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│  badi-oerlikon-dev-rg                                               │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │  API Function App (Flex Consumption, scales to zero)          │   │
+│  │  Python 3.11 · badi-oerlikon-dev-api                          │   │
+│  │                                                                │   │
+│  │  HTTP:  GET /api/health_check                                  │   │
+│  │         GET /api/occupancy                                     │   │
+│  │         GET /api/dashboard                                     │   │
+│  │  Timer: export_parquet (daily 02:00 UTC)                       │   │
+│  └───────────────────────────────┬────────────────────────────────┘  │
+│                                  │ reads                              │
+│                                  ▼                                    │
+│             badiacidevyb1a storage account (shared)                  │
+│                                                                      │
+│  ┌─────────────────────────┐                                        │
+│  │  Application Insights   │  Traces, exceptions, live metrics      │
+│  └─────────────────────────┘                                        │
+└─────────────────────────────────────────────────────────────────────┘
          ▲
          │ WebSocket (wss://)
          │
 ┌────────┴────────────────────────────┐
 │  CrowdMonitor Public API            │
 │  wss://badi-public.crowdmonitor.ch  │
-│  :9591/api                          │
-│  Updates every ~3-4 seconds         │
-│  ~32 Swiss swimming pool locations  │
+│  :9591/api · ~32 Swiss locations    │
 └─────────────────────────────────────┘
 ```
 
-### Why Two Apps?
+### Why Two Separate Deployments?
 
-Deploying any code change to a Function App causes host restarts. With a
-single app, pushing a dashboard tweak kills the always-ready WebSocket
-collectors and causes missed data windows. By splitting into two apps,
-API changes deploy independently and the collector keeps running.
+Deploying any code change to a Function App causes host restarts. With a single app,
+pushing a dashboard tweak would interrupt the collector. By using a separate ACI container
+for collection and a Function App for the API, changes are fully independent.
 
-Each app has its own path-filtered GitHub Actions workflow:
+The ACI container also suits the collector better than Functions: it's a persistent
+process that holds a single long-lived WebSocket connection rather than running in
+discrete invocation windows.
 
-## Leap-Frog Pattern
+## ACI Collector
 
-### Problem
-A single timer-triggered function collecting for 5 minutes (300 s) blocks the next scheduled invocation. Azure Functions' singleton lock prevents overlapping executions of the same function.
+### Process Model
 
-### Solution
-Two independent timer functions with staggered 10-minute schedules:
+`src/collector-aci/main.py` runs two concurrent asyncio tasks:
 
-```
-Time:   :00   :05   :10   :15   :20   :25   :30   :35
-EVEN:   |=298s=|     |=298s=|     |=298s=|     |=298s=|
-ODD:          |=298s=|     |=298s=|     |=298s=|
-```
+1. **WebSocket listener** — maintains a continuous connection, writes one row per
+   received message (~every 4 seconds)
+2. **Aggregator** — sleeps until 02:00 CET each day, then builds daily pattern statistics
 
-- **Even** fires at minutes 0, 10, 20, 30, 40, 50
-- **Odd** fires at minutes 5, 15, 25, 35, 45, 55
-- Each collects for 298 seconds (2 s under 5 min to avoid boundary overlap)
-- Together they produce a CSV file every 5 minutes with no gaps
+Graceful shutdown handles `SIGTERM` (sent by ACI on container stop).
 
-### useMonitor: false
-Both triggers set `useMonitor: false` in `function.json`. Without this, Azure's timer monitor tracks missed invocations and fires catch-up executions. When a function runs long (298 s), the catch-up mechanism holds the singleton lock and cascades into blocking subsequent invocations.
+### Data Flow
 
-### always_ready Instances
-The Terraform config provisions `always_ready` instances for both timer functions (`always_ready { name = "function:websocket_listener_even", instance_count = 1 }`). Without this, Flex Consumption may not wake up cold instances fast enough for timer triggers.
-
-## Data Flow
-
-```
-1. Timer fires (e.g., :00)
-2. websocket_listener_even main() → run_collection("even", mytimer)
-3. Connect to wss://badi-public.crowdmonitor.ch:9591/api
-4. Send "all" command
-5. Receive JSON array every ~3-4 seconds
-6. Extract SSD-7 currentfill → {timestamp, occupancy}
-7. Collect for 298 seconds (~75 readings)
-8. Compute stats: min, max, avg, median
-9. Write CSV to blob: occupancy-data/YYYY-MM-DD/occupancy_HH_MM.csv
+```text
+1. Connect to wss://badi-public.crowdmonitor.ch:9591/api
+2. Send "all" command
+3. Receive JSON array every ~3-4 seconds (~32 locations)
+4. Extract SSD-7 currentfill → occupancy_oerlikon
+   Extract SSD-4 currentfill → occupancy_city
+5. Write row to Table Storage:
+     PartitionKey = YYYY-MM-DD
+     RowKey       = HH:MM:SS.ffffff
+     occupancy_oerlikon = int
+     occupancy_city     = int
 ```
 
-## Code Structure
+### Daily Aggregation
 
+At 02:00 CET each day the aggregator reads the previous day's rows from the `occupancy`
+table and writes summary statistics to `occupancypatterns`:
+
+```text
+PartitionKey = weekday (0=Monday … 6=Sunday)
+RowKey       = HH:MM  (15-minute slot)
+avg_oerlikon, std_oerlikon
+avg_city,     std_city
 ```
-src/
-├── collector/                      # Function App 1 — data collection
-│   ├── utils/
-│   │   ├── websocket_collector.py  # run_collection() → _async_collect() → _write_to_blob()
-│   │   └── websocket_handler.py    # WebSocketListener.collect_updates()
-│   ├── websocket_listener_even/    # 13-line wrapper → run_collection("even")
-│   │   ├── __init__.py
-│   │   └── function.json           # cron: 0 0,10,20,30,40,50 * * * *
-│   ├── websocket_listener_odd/     # 13-line wrapper → run_collection("odd")
-│   │   ├── __init__.py
-│   │   └── function.json           # cron: 0 5,15,25,35,45,55 * * * *
-│   ├── host.json                   # functionTimeout: 10 min
-│   └── requirements.txt            # websockets, azure-storage-blob, …
-│
-└── api/                            # Function App 2 — HTTP API + dashboard
-    ├── utils/
-    │   └── dashboard_builder.py    # Pure-Python Plotly chart generation
-    ├── serve_dashboard/            # Plotly dashboard (generated by dashboard_builder.py)
-    ├── get_occupancy/              # HTTP API for querying stored data
-    ├── health_check/               # Runtime health endpoint
-    ├── host.json
-    └── requirements.txt            # plotly, azure-storage-blob, …
+
+448 rows total (7 weekdays × 64 slots). Each run upserts (merge) so re-runs are safe.
+
+### Deployment
+
+ACI does **not** pull a new image on `az container restart`. Full redeploy required:
+
+```bash
+./scripts/deploy-collector-aci.sh        # Terraform + build + push + delete + recreate
+./scripts/deploy-collector-aci.sh --image  # Build + push + delete + recreate only
 ```
+
+## API Function App
+
+### Endpoints
+
+#### GET /api/dashboard
+
+- Query params: `days` (default 30, max 90), `location` (`oerlikon` | `city`)
+- Renders a fully self-contained Plotly HTML page (no JS framework, pure Python)
+- Four charts: occupancy timeline, best time to visit (15-min bins), weekly heatmap,
+  today/tomorrow forecast with ±1σ bands from `occupancypatterns`
+- Location-aware opening hours (different schedules for Oerlikon vs City)
+- Dark mode (GitHub palette), timezone Europe/Zurich
+
+#### GET /api/occupancy
+
+- Query params: `days` (1–30, default 7), `resolution` (`raw`/`5min`/`15min`/`1hour`/`1day`),
+  `date` (YYYY-MM-DD), `location` (`oerlikon` | `city`)
+- Queries `occupancy` table by PartitionKey (date), aggregates to requested resolution
+- Returns JSON with timestamp + occupancy + min/max bands
+- CORS headers: `Access-Control-Allow-Origin: *`
+
+#### GET /api/health_check
+
+- Returns JSON: status, timestamp, configured env vars
+
+#### Timer: export_parquet (daily 02:00 UTC)
+
+- Reads previous day from `occupancy` table
+- Feature-engineers columns: hour, minute, day_of_week, is_open_oerlikon, is_open_city
+- Writes Parquet (snappy) to `occupancy-parquet/year=YYYY/month=MM/day=DD/occupancy.parquet`
+
+## Storage Schema
+
+### Table: `occupancy`
+
+| Field                | Type   | Description                               |
+| -------------------- | ------ | ----------------------------------------- |
+| `PartitionKey`       | string | Date (`YYYY-MM-DD`)                       |
+| `RowKey`             | string | Time (`HH:MM:SS.ffffff`, UTC)             |
+| `occupancy_oerlikon` | int    | Current fill — Hallenbad Oerlikon (SSD-7) |
+| `occupancy_city`     | int    | Current fill — Hallenbad City (SSD-4)     |
+
+~12 rows/min, ~17,280 rows/day.
+
+### Table: `occupancypatterns`
+
+| Field                          | Type   | Description                            |
+| ------------------------------ | ------ | -------------------------------------- |
+| `PartitionKey`                 | string | Weekday (`0`=Monday … `6`=Sunday)      |
+| `RowKey`                       | string | Time slot (`HH:MM`, 15-min resolution) |
+| `avg_oerlikon`, `std_oerlikon` | float  | Mean ± σ for Oerlikon                  |
+| `avg_city`, `std_city`         | float  | Mean ± σ for City                      |
+
+448 rows total. Populated nightly at 02:00 CET by the ACI aggregator.
+
+### Blob Container: `occupancy-parquet`
+
+Path: `year=YYYY/month=MM/day=DD/occupancy.parquet`
+
+Schema: `timestamp (UTC)`, `occupancy_oerlikon (Int32)`, `occupancy_city (Int32)`,
+`hour`, `minute`, `day_of_week`, `is_open_oerlikon`, `is_open_city`
 
 ## Infrastructure as Code
 
-Terraform (azurerm ~4.0) in `azure/`:
+Two separate Terraform roots to allow independent lifecycle management:
 
-| Resource | Type | Notes |
-|----------|------|-------|
-| Resource Group | `azurerm_resource_group` | `badi-oerlikon-dev-rg` |
-| Data Storage | `azurerm_storage_account` | Standard LRS, occupancy-data container |
-| Function Storage | `azurerm_storage_account` | Separate account for function runtime |
-| Service Plan | `azurerm_service_plan` | FC1 (Flex Consumption), Linux, shared |
-| Collector App | `azurerm_function_app_flex_consumption` | Python 3.11, always_ready |
-| API App | `azurerm_function_app_flex_consumption` | Python 3.11, scales to zero |
-| App Insights | `azurerm_application_insights` | 30-day retention, shared |
+### `azure/collector-aci/`
+
+| Resource          | Type                              | Notes                                 |
+| ----------------- | --------------------------------- | ------------------------------------- |
+| Resource Group    | `azurerm_resource_group`          | `badi-oerlikon-dev-aci-rg`            |
+| Storage Account   | `azurerm_storage_account`         | `badiacidevyb1a`, Standard LRS        |
+| Table: occupancy  | `azurerm_storage_table`           | Raw readings                          |
+| Table: patterns   | `azurerm_storage_table`           | `occupancypatterns`                   |
+| Parquet container | `azurerm_storage_container`       | `occupancy-parquet`                   |
+| ACR               | `azurerm_container_registry`      | Basic SKU, admin enabled              |
+| Log Analytics     | `azurerm_log_analytics_workspace` | 30-day retention                      |
+| ACI               | `azurerm_container_group`         | Linux, `restart=Always`, no public IP |
+
+### `azure/`
+
+| Resource       | Type                                      | Notes                              |
+| -------------- | ----------------------------------------- | ---------------------------------- |
+| Resource Group | `azurerm_resource_group`                  | `badi-oerlikon-dev-rg`             |
+| Func Storage   | `azurerm_storage_account`                 | `badfuncsa3yz1`, runtime only      |
+| Service Plan   | `azurerm_service_plan`                    | FC1 (Flex Consumption), Linux      |
+| API App        | `azurerm_linux_function_app`              | Python 3.11, scales to zero        |
+| App Insights   | `azurerm_application_insights`            | 30-day retention                   |
+
+The API app reads from `badiacidevyb1a` (the ACI storage account) via connection string
+passed as an app setting. The two Terraform roots are linked only through this shared
+storage account name.
 
 ## CI/CD
 
-Two path-filtered GitHub Actions workflows:
+One path-filtered GitHub Actions workflow:
 
-| Workflow | File | Triggers on |
-|----------|------|-------------|
-| Deploy Collector | `deploy-collector.yml` | `src/collector/**` changes on `main` |
-| Deploy API | `deploy-api.yml` | `src/api/**` changes on `main` |
+| Workflow   | File              | Triggers on              |
+| ---------- | ----------------- | ------------------------ |
+| Deploy API | `deploy-api.yml`  | `src/api/**` on `main`   |
 
-Both: Checkout → Python 3.11 → pip install to `.python_packages` → verify → zip → Azure login (OIDC) → deploy via `Azure/functions-action`
+Steps: checkout → Python 3.11 → pip install → verify packages → zip → OIDC login →
+deploy via `Azure/functions-action`.
+
+The ACI collector is **not** deployed via CI. Use `scripts/deploy-collector-aci.sh` directly.
 
 ## WebSocket API Protocol
 
 - **Endpoint:** `wss://badi-public.crowdmonitor.ch:9591/api`
-- **Handshake:** Standard WebSocket upgrade
 - **Command:** Send `"all"` after connect
-- **Response:** JSON array of ~32 location objects, broadcast every 3-4 seconds
-- **Target field:** `currentfill` (string, needs `int(float(...))` conversion)
-- **Target UID:** `SSD-7` (Hallenbad Oerlikon)
+- **Response:** JSON array of ~32 location objects, broadcast every 3–4 seconds
+- **Target fields:** `uid` (to identify location), `currentfill` (string → int conversion)
+- **Monitored UIDs:** `SSD-7` (Oerlikon), `SSD-4` (City)
