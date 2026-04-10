@@ -78,27 +78,90 @@ definitively.
 
 ## [2026-02-24] — Collector/API split and major cleanup
 
-### Added
-- Two independent Azure Function Apps: one for the collector, one for the HTTP API
-- Pure-Python Plotly dashboard replacing the static HTML file with hardcoded JavaScript
-- `health_check`, `get_occupancy`, `serve_dashboard` HTTP endpoints
-- Dark-mode dashboard (GitHub palette) with resolution slider and best 30-min window marker
-- Separate Terraform roots for collector and API (independent lifecycle management)
-- OIDC-based GitHub Actions deployment (no long-lived secrets)
+21 commits (`1c591ca`..`3817089`). 156 files changed, 1,770 insertions, 55,688 deletions.
 
-### Removed
-- Monolithic single Function App that combined WebSocket collection and HTTP endpoints.
-  Any dashboard change restarted the host and interrupted data collection.
-- Static HTML dashboard with hardcoded JavaScript
-- Legacy Flask web application (`src/api/`, `src/main.py`)
-- Old Bicep IaC files (Terraform is the sole infrastructure-as-code)
-- Deprecated scraper modules, legacy shell scripts, and tracked build artefacts
-- 15+ obsolete documentation files consolidated into README / QUICKSTART / ARCHITECTURE
+### Starting state
+
+The project was a monolithic Azure Function App (`src/functions/`) that combined
+WebSocket data collection and HTTP dashboard endpoints in a single deployment:
+
+- Two leap-frog timer functions (`websocket_listener_even`, `websocket_listener_odd`)
+  sharing collection logic that had been copy-pasted between them
+- Three HTTP functions (`serve_dashboard`, `get_occupancy`, `health_check`)
+- A static HTML dashboard with hardcoded JavaScript
+- Accumulated dead code: unused Flask web app, old Bicep IaC, legacy scraper modules,
+  obsolete shell scripts, tracked `.zip` build artefacts
+- A single CI/CD workflow deploying everything together
+- Scattered, outdated documentation across 15+ markdown files
+
+### Root cause: deployment restarts interrupted collection
+
+Five rapid deployments between 22:56–23:27 UTC caused the Function App host to restart
+after each push, evicting the always-ready timer triggers and producing collection gaps.
+Any dashboard change — however small — restarted the collector.
+
+### What changed
+
+**Phase 1 — Code deduplication** (`1c591ca`)  
+Extracted shared WebSocket logic from the two leap-frog functions into
+`utils/websocket_collector.py` and `utils/websocket_handler.py`. Both timer functions
+became thin wrappers.
+
+**Phase 2 — HTTP endpoints** (`bf4a65a`, `b76bdb4`)  
+Added `serve_dashboard`, `get_occupancy`, and `health_check` as proper Azure Functions.
+
+**Phase 3 — Repository cleanup** (`a87f5ba`..`5cdc1b0`, 11 commits)
+
+- Moved test files to `tests/`
+- Removed tracked `.zip` deployment artefacts
+- Deleted the legacy Flask app (`src/api/`, `src/main.py`), scraper modules, services
+- Removed obsolete scripts (`scrape_once.py`, `scraped_data.csv`)
+- Deleted superseded Bicep IaC files (Terraform is the source of truth)
+- Cleaned unused Python modules and deprecated test files
+- Removed 7 obsolete documentation files and the legacy CI workflow
+
+Result: −55,688 lines. The repo went from a cluttered multi-approach project to a
+focused Azure Functions codebase.
+
+**Phase 4 — Documentation rewrite** (`1417978`)  
+Rewrote `README.md`, `QUICKSTART.md`, and `ARCHITECTURE.md` from scratch.
+
+**Phase 5 — Plotly dashboard** (`fafb96a`, `9338a50`, `4343752`, `c98fcf9`)  
+Replaced the static HTML/JS dashboard with pure-Python Plotly (server-side rendered,
+timezone-aware, no static file serving).
+
+**Phase 6 — CI/CD fixes** (`5ba851f`, `edda44c`)  
+Removed `SCM_DO_BUILD_DURING_DEPLOYMENT` / `ENABLE_ORYX_BUILD` settings incompatible
+with Flex Consumption. Added deployment status badge.
+
+**Phase 7 — Two-app split** (`3817089`)  
+Split the monolithic app into two independent Function Apps:
+
+| App                           | Functions                                          | Scaling                    |
+| ----------------------------- | -------------------------------------------------- | -------------------------- |
+| `badi-oerlikon-dev-collector` | `websocket_listener_even`, `websocket_listener_odd` | Always-ready (2 instances) |
+| `badi-oerlikon-dev-api`       | `serve_dashboard`, `get_occupancy`, `health_check` | Scale to zero              |
+
+Each got its own `host.json`, `requirements.txt`, `local.settings.json`, `.funcignore`,
+and a path-filtered CI/CD workflow. Terraform updated to two `azurerm_function_app_flex_consumption`
+resources sharing one service plan.
+
+**Key property:** Deploying a dashboard change only restarts the API app. The collector
+keeps running uninterrupted. (This property was later strengthened further by moving the
+collector to ACI — see [2026-02-27].)
+
+### Lessons learned
+
+- **Start with _why_, not _what_.** "My timer triggers miss invocations after deployments"
+  immediately points toward isolation. "Clean up my repo" leads to incremental work.
+- **Diagnose architectural problems before writing code.** Half the cleanup work was
+  tangential to the actual problem.
+- **Batch related changes.** The 11 cleanup commits could have been one.
 
 ---
 
 ## Earlier history
 
-Initial versions of this project used a scraper-based approach (HTTP polling rather than
-WebSocket) and a Flask web application served as a Docker container. Both were abandoned
-in favour of the Azure Functions architecture described above.
+Initial versions used HTTP scraping (polling rather than WebSocket) and a Flask web
+application served as a Docker container. Both were abandoned in favour of the Azure
+Functions architecture described above.

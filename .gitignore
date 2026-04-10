@@ -219,4 +219,3 @@ nohup.out
 deploy/
 .python_packages/
 *.zip
-docs/POST_MORTEM.md
