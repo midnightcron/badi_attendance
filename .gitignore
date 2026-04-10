@@ -219,3 +219,7 @@ nohup.out
 deploy/
 .python_packages/
 *.zip
+
+# AI tool session exports and local tool state
+copilot_session_export*.md
+.claude/
