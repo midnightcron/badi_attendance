@@ -16,6 +16,7 @@ import sys
 import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from contextlib import asynccontextmanager
 
 from db import create_pool
@@ -28,8 +29,9 @@ logging.basicConfig(
     datefmt="%Y-%m-%dT%H:%M:%S%z",
     stream=sys.stdout,
 )
+_level_int = logging.getLevelName(LOG_LEVEL)
 structlog.configure(
-    wrapper_class=structlog.make_filtering_bound_logger(logging.getLevelName(LOG_LEVEL)),
+    wrapper_class=structlog.make_filtering_bound_logger(_level_int),
 )
 
 
@@ -47,6 +49,12 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["GET"],
 )
+
+
+@app.get("/", include_in_schema=False)
+async def root() -> RedirectResponse:
+    return RedirectResponse("/api/dashboard", status_code=307)
+
 
 app.include_router(health.router, prefix="/api")
 app.include_router(occupancy.router, prefix="/api")

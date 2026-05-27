@@ -50,7 +50,7 @@ if [[ ! -b "$PARTITION" ]]; then
   exit 1
 fi
 
-mkfs.ext4 -L badi-data "$PARTITION"
+mkfs.ext4 -F -L badi-data "$PARTITION"
 echo "Formatted $PARTITION as ext4 (label: badi-data)"
 
 # ── Mount & fstab ────────────────────────────────────────────────────────────
