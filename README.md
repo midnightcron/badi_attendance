@@ -1,6 +1,6 @@
-# Badi Oerlikon Occupancy Monitor
+# Badi Occupancy Monitor
 
-[![API Deploy](https://github.com/rworreby/badi_oerlikon_attendence/actions/workflows/deploy-api.yml/badge.svg?branch=main)](https://github.com/rworreby/badi_oerlikon_attendence/actions/workflows/deploy-api.yml)
+[![API Deploy](https://github.com/midnightcron/badi_attendance/actions/workflows/deploy-api.yml/badge.svg?branch=main)](https://github.com/midnightcron/badi_attendance/actions/workflows/deploy-api.yml)
 
 Real-time occupancy monitoring for Zurich swimming pools using WebSocket data collection on Azure.
 
