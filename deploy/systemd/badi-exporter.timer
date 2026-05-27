@@ -1,0 +1,13 @@
+[Unit]
+Description=Run badi Parquet export daily at 02:10 Europe/Zurich
+After=time-sync.target
+
+[Timer]
+# 02:10 CET/CEST — 10 min after aggregation window to let TimescaleDB catch up
+OnCalendar=*-*-* 02:10:00
+# Europe/Zurich so DST transitions are handled automatically
+TimeZone=Europe/Zurich
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,90 @@
+services:
+
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    restart: unless-stopped
+    volumes:
+      - /mnt/data/postgres:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    environment:
+      POSTGRES_DB: badi
+      POSTGRES_USER: badi
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_password
+    secrets:
+      - pg_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U badi -d badi"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  collector:
+    build:
+      context: ../src/collector-pi
+      platforms:
+        - linux/arm64
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://badi@postgres/badi
+      WEBSOCKET_URL: wss://badi-public.crowdmonitor.ch:9591/api
+      LOG_LEVEL: INFO
+      STATS_INTERVAL_SECONDS: "300"
+    secrets:
+      - pg_password
+
+  api:
+    build:
+      context: ../src/api-pi
+      platforms:
+        - linux/arm64
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://badi@postgres/badi
+      LOG_LEVEL: INFO
+    secrets:
+      - pg_password
+    # Not exposed directly — cloudflared proxies to this port.
+    # Accessible on tailnet at http://<pi-hostname>:8000 for debugging.
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  exporter:
+    build:
+      context: ../src/exporter
+      platforms:
+        - linux/arm64
+    restart: "no"
+    profiles:
+      - cron    # started by systemd timer, not always-on
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - /mnt/data/parquet:/data/parquet
+    environment:
+      DATABASE_URL: postgresql://badi@postgres/badi
+      PARQUET_DIR: /data/parquet
+    secrets:
+      - pg_password
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    secrets:
+      - cf_tunnel_token
+    environment:
+      TUNNEL_TOKEN_FILE: /run/secrets/cf_tunnel_token
+
+secrets:
+  pg_password:
+    file: ./secrets/pg_password
+  cf_tunnel_token:
+    file: ./secrets/cf_tunnel_token

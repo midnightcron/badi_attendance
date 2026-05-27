@@ -1,0 +1,18 @@
+# Cloudflare Tunnel config for badi.midnightcron.com
+#
+# Copy to ~/.cloudflared/config.yml on the Pi (or mount into the container).
+# Replace <TUNNEL_ID> with your actual tunnel ID from `cloudflared tunnel list`.
+#
+# The token-based approach used in docker-compose.yml (TUNNEL_TOKEN_FILE env var)
+# does NOT need this file — the token embeds the tunnel configuration.
+# This file is provided as documentation and for the legacy named-config approach.
+
+tunnel: <TUNNEL_ID>
+credentials-file: /root/.cloudflared/<TUNNEL_ID>.json
+
+ingress:
+  - hostname: badi.midnightcron.com
+    service: http://api:8000
+
+  # Catch-all: Cloudflare returns 404 for any other hostname
+  - service: http_status:404

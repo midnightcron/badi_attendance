@@ -1,0 +1,13 @@
+[Unit]
+Description=Badi occupancy nightly Parquet export
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# WorkingDirectory must be the deploy/ directory so docker compose finds
+# docker-compose.yml and the secrets/ subdirectory.
+WorkingDirectory=/home/%i/badi_attendance/deploy
+ExecStart=/usr/bin/docker compose run --rm exporter
+StandardOutput=journal
+StandardError=journal
