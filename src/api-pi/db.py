@@ -5,6 +5,7 @@ Call create_pool() once at startup; pass the pool to route handlers.
 """
 
 import os
+from datetime import timedelta
 from pathlib import Path
 
 import asyncpg
@@ -87,7 +88,7 @@ async def fetch_occupancy(
     rows = await pool.fetch(
         f"""
         SELECT
-            time_bucket($1::interval, ts)    AS bucket,
+            time_bucket($1, ts)              AS bucket,
             ROUND(AVG({col})::numeric, 1)    AS avg,
             MIN({col})                       AS min,
             MAX({col})                       AS max,
@@ -97,7 +98,7 @@ async def fetch_occupancy(
         GROUP BY bucket
         ORDER BY bucket
         """,
-        f"{bucket_minutes} minutes",
+        timedelta(minutes=bucket_minutes),
         start_ts,
         end_ts,
     )
