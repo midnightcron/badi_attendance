@@ -216,7 +216,6 @@ nohup.out
 
 # Azure Functions build artifacts
 .build*/
-deploy/
 .python_packages/
 *.zip
 
