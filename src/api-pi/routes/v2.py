@@ -1,15 +1,18 @@
 """
-v2 dashboard — mobile-first status card.
+v2 dashboard — predictions-first home page.
+
+The value-add is *when to go*, not the current number.
 
 Routes:
     GET /                        — redirect to /pool/oerlikon
     GET /pool/{location}         — HTML shell (Jinja template)
-    GET /api/v2/status?location  — JSON payload for the card
+    GET /api/v2/status?location  — JSON: status pill, today pattern + best,
+                                   next-7-days best
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Query, Request
@@ -29,9 +32,10 @@ _HOURS_OERLIKON: dict[int, tuple[int, int]] = {
     6: (6, 22),
 }
 _HOURS_CITY: dict[int, tuple[int, int]] = {i: (6, 22) for i in range(7)}
-
 _LOCATION_HOURS = {"oerlikon": _HOURS_OERLIKON, "city": _HOURS_CITY}
 _LOCATION_LABEL = {"oerlikon": "Hallenbad Oerlikon", "city": "Hallenbad City"}
+
+_DOW_SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
 @router.get("/", response_class=HTMLResponse, include_in_schema=False)
@@ -58,102 +62,167 @@ async def pool_page(request: Request, location: str):
     )
 
 
+def _slot_label(slot_min: int) -> str:
+    return f"{slot_min // 60:02d}:{slot_min % 60:02d}"
+
+
+def _top_n_30min_windows(slots, min_slot, max_start, n):
+    """slots: list of {slot_min, typical}. Returns top-n least-busy 30-min windows."""
+    by_min = {s["slot_min"]: s["typical"] for s in slots}
+    candidates = []
+    for sm, t1 in by_min.items():
+        if sm < min_slot or sm > max_start:
+            continue
+        t2 = by_min.get(sm + 15)
+        if t2 is None:
+            continue
+        avg = round((t1 + t2) / 2, 1)
+        candidates.append(
+            {
+                "t_start": _slot_label(sm),
+                "t_end": _slot_label(sm + 30),
+                "slot_min": sm,
+                "avg": avg,
+            }
+        )
+    candidates.sort(key=lambda x: (x["avg"], x["slot_min"]))
+    return candidates[:n]
+
+
 @router.get("/api/v2/status")
 async def status(
     request: Request,
-    location: str = Query(default="oerlikon", pattern="^(oerlikon|city)$"),
+    location: str = Query(
+        default="oerlikon", pattern="^(oerlikon|city)$"
+    ),
 ) -> JSONResponse:
     pool = request.app.state.pool
-    col = f"occupancy_{location}"
+    col_raw = f"occupancy_{location}"
+    col_avg = f"avg_{location}"
     now = datetime.now(_TZ)
     dow = now.weekday()
-    hour = now.hour
-    quarter = now.minute // 15
+    current_slot_min = now.hour * 60 + (now.minute // 15) * 15
 
     open_h, close_h = _LOCATION_HOURS[location][dow]
-    is_open = open_h <= hour < close_h
+    is_open = open_h <= now.hour < close_h
+    hours_map = _LOCATION_HOURS[location]
 
-    # 1. Current — average of the last 5 minutes (smoothes WebSocket jitter)
+    # 1. Current (last 5 min avg)
     current_row = await pool.fetchrow(
         f"""
-        SELECT ROUND(AVG({col})::numeric, 1) AS avg
+        SELECT ROUND(AVG({col_raw})::numeric, 1) AS avg
         FROM occupancy
         WHERE ts >= NOW() - INTERVAL '5 minutes'
-          AND {col} IS NOT NULL
+          AND {col_raw} IS NOT NULL
         """
     )
 
-    # 2. Typical — same weekday + same 15-min slot, full history.
-    # Uses the occupancy_15min continuous aggregate (~8.5K rows vs 1.5M raw).
-    avg_col = f"avg_{location}"
-    std_col = f"std_{location}"
-    typical_row = await pool.fetchrow(
+    # 2. Full week of historical typical patterns from the CAGG
+    #    (~672 rows, well under 100 ms)
+    week_rows = await pool.fetch(
         f"""
         SELECT
-          ROUND(AVG({avg_col})::numeric, 1) AS avg,
-          ROUND(AVG({std_col})::numeric, 1) AS std
+          EXTRACT(DOW FROM bucket AT TIME ZONE 'Europe/Zurich')::int AS day,
+          (EXTRACT(HOUR FROM bucket AT TIME ZONE 'Europe/Zurich')::int * 60
+            + (EXTRACT(MINUTE FROM bucket AT TIME ZONE 'Europe/Zurich')::int
+               / 15) * 15
+          ) AS slot_min,
+          ROUND(AVG({col_avg})::numeric, 1) AS typical
         FROM occupancy_15min
-        WHERE EXTRACT(DOW FROM bucket AT TIME ZONE 'Europe/Zurich')::int = $1
-          AND EXTRACT(HOUR FROM bucket AT TIME ZONE 'Europe/Zurich')::int = $2
-          AND (EXTRACT(MINUTE FROM bucket AT TIME ZONE 'Europe/Zurich')::int / 15) = $3
-        """,
-        dow, hour, quarter,
+        GROUP BY day, slot_min
+        """
     )
 
-    # 3. Best window today — lowest historical 15-min slot still ahead of us.
-    best = None
-    if is_open:
-        current_slot_min = hour * 60 + quarter * 15
-        # leave 30 min for a swim before close
-        best_row = await pool.fetchrow(
-            f"""
-            WITH slots AS (
-              SELECT
-                (EXTRACT(HOUR FROM bucket AT TIME ZONE 'Europe/Zurich')::int * 60
-                  + (EXTRACT(MINUTE FROM bucket AT TIME ZONE 'Europe/Zurich')::int / 15) * 15
-                ) AS slot_min,
-                AVG({avg_col})::numeric AS avg
-              FROM occupancy_15min
-              WHERE EXTRACT(DOW FROM bucket AT TIME ZONE 'Europe/Zurich')::int = $1
-              GROUP BY slot_min
-            )
-            SELECT slot_min, ROUND(avg, 1) AS avg
-            FROM slots
-            WHERE slot_min >= $2 AND slot_min <= $3
-            ORDER BY avg ASC
-            LIMIT 1
-            """,
-            dow, current_slot_min, close_h * 60 - 30,
-        )
-        if best_row:
-            sm = int(best_row["slot_min"])
-            best = {
-                "start": f"{sm // 60:02d}:{sm % 60:02d}",
-                "avg": float(best_row["avg"]),
+    # postgres DOW is Sunday=0..Saturday=6, Python is Monday=0..Sunday=6.
+    # convert: py_dow = (pg_dow + 6) % 7
+    week_patterns: dict[int, list[dict]] = {d: [] for d in range(7)}
+    for r in week_rows:
+        pg_dow = int(r["day"])
+        py_dow = (pg_dow + 6) % 7
+        oh, ch = hours_map[py_dow]
+        sm = int(r["slot_min"])
+        if not (oh * 60 <= sm < ch * 60):
+            continue
+        week_patterns[py_dow].append(
+            {
+                "slot_min": sm,
+                "typical": float(r["typical"]) if r["typical"] is not None else 0.0,
             }
+        )
+    for d in range(7):
+        week_patterns[d].sort(key=lambda x: x["slot_min"])
 
-    # 4. Today's sparkline — 15-min buckets from local midnight to now
-    sparkline_rows = await pool.fetch(
+    # 3. Today's actual data so far (15-min buckets)
+    today_actual_rows = await pool.fetch(
         f"""
         SELECT
-          time_bucket(INTERVAL '15 minutes', ts) AS bucket,
-          ROUND(AVG({col})::numeric, 1) AS avg
+          (EXTRACT(HOUR FROM ts AT TIME ZONE 'Europe/Zurich')::int * 60
+            + (EXTRACT(MINUTE FROM ts AT TIME ZONE 'Europe/Zurich')::int
+               / 15) * 15
+          ) AS slot_min,
+          ROUND(AVG({col_raw})::numeric, 1) AS avg
         FROM occupancy
         WHERE ts >= date_trunc('day', NOW() AT TIME ZONE 'Europe/Zurich')
                     AT TIME ZONE 'Europe/Zurich'
           AND ts <= NOW()
-          AND {col} IS NOT NULL
-        GROUP BY bucket
-        ORDER BY bucket
+          AND {col_raw} IS NOT NULL
+        GROUP BY slot_min
+        ORDER BY slot_min
         """
     )
-    sparkline = [
-        {
-            "t": r["bucket"].astimezone(_TZ).strftime("%H:%M"),
-            "v": float(r["avg"]) if r["avg"] is not None else None,
-        }
-        for r in sparkline_rows
-    ]
+    actual_by_slot = {
+        int(r["slot_min"]): float(r["avg"]) for r in today_actual_rows
+    }
+
+    # 4. Build today_pattern (typical + actual merged)
+    today_pattern = []
+    for s in week_patterns[dow]:
+        sm = s["slot_min"]
+        today_pattern.append(
+            {
+                "t": _slot_label(sm),
+                "slot_min": sm,
+                "typical": s["typical"],
+                "actual": actual_by_slot.get(sm),
+            }
+        )
+
+    # 5. Today's top 3 best 30-min windows (future-only, 30 min before close)
+    today_best = []
+    if is_open:
+        today_best = _top_n_30min_windows(
+            week_patterns[dow],
+            min_slot=current_slot_min,
+            max_start=close_h * 60 - 30,
+            n=3,
+        )
+
+    # 6. Week's top 5 best 30-min windows across the next 7 days
+    week_best = []
+    for offset in range(7):
+        target_date = now.date() + timedelta(days=offset)
+        target_dow = target_date.weekday()
+        oh, ch = hours_map[target_dow]
+        min_slot = current_slot_min if offset == 0 else oh * 60
+        windows = _top_n_30min_windows(
+            week_patterns[target_dow],
+            min_slot=min_slot,
+            max_start=ch * 60 - 30,
+            n=5,
+        )
+        for w in windows:
+            w_copy = dict(w)
+            w_copy["dow"] = target_dow
+            if offset == 0:
+                w_copy["day_name"] = "Today"
+            elif offset == 1:
+                w_copy["day_name"] = "Tomorrow"
+            else:
+                w_copy["day_name"] = _DOW_SHORT[target_dow]
+            w_copy["date_offset"] = offset
+            week_best.append(w_copy)
+    week_best.sort(key=lambda x: (x["avg"], x["date_offset"], x["slot_min"]))
+    week_best = week_best[:5]
 
     def _f(row, key):
         if row is None:
@@ -164,18 +233,16 @@ async def status(
     return JSONResponse(
         {
             "now": now.strftime("%H:%M"),
+            "now_slot_min": current_slot_min,
             "current": _f(current_row, "avg"),
-            "typical": {
-                "avg": _f(typical_row, "avg"),
-                "std": _f(typical_row, "std"),
-            },
             "status": {
                 "is_open": is_open,
                 "open_h": open_h,
                 "close_h": close_h,
             },
-            "best": best,
-            "sparkline": sparkline,
+            "today_pattern": today_pattern,
+            "today_best": today_best,
+            "week_best": week_best,
         },
         headers={"Cache-Control": "public, max-age=30"},
     )

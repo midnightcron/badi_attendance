@@ -2,36 +2,70 @@
 {% block title %}{{ label }}{% endblock %}
 {% block head %}
 <style>
-  .card { max-width: 420px; margin: 0 auto; padding: 24px 20px; }
-  .title { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
-  .subtitle { color: #7d8590; font-size: 13px; margin: 0 0 32px; }
-  .big-num { text-align: center; margin: 24px 0 8px; }
-  .big-num .n { font-size: 88px; font-weight: 700; line-height: 1; }
-  .big-num .lbl { font-size: 13px; color: #7d8590; margin-top: 6px; letter-spacing: 0.04em; }
-  .compare { text-align: center; font-size: 14px; margin: 0 0 24px; min-height: 21px; }
-  .compare .down { color: #3fb950; }
-  .compare .up { color: #f85149; }
-  .compare .flat { color: #d29922; }
-  .row { display: flex; align-items: center; justify-content: center; margin: 0 0 28px; }
-  .badge {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 7px 16px; border-radius: 16px; font-size: 13px; font-weight: 500;
+  .card { max-width: 480px; margin: 0 auto; padding: 20px 18px 40px; }
+
+  /* Header */
+  .h-row {
+    display: flex; align-items: baseline; justify-content: space-between;
+    margin: 0 0 8px;
   }
-  .badge.open { background: rgba(63,185,80,0.14); color: #3fb950; }
-  .badge.closed { background: rgba(248,81,73,0.14); color: #f85149; }
-  .panel {
+  h1 { font-size: 18px; font-weight: 600; margin: 0; }
+  .nowtime { font-size: 12px; color: #7d8590; }
+
+  .status-pill {
+    display: flex; align-items: center; gap: 10px;
+    background: #161b22; border: 1px solid #30363d;
+    border-radius: 999px; padding: 8px 14px;
+    font-size: 14px; margin: 0 0 28px;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .dot.open  { background: #3fb950; box-shadow: 0 0 6px #3fb95080; }
+  .dot.closed { background: #f85149; }
+  .status-pill .current { font-weight: 600; }
+  .status-pill .sep { color: #30363d; }
+  .status-pill .muted { color: #7d8590; }
+
+  /* Section header */
+  .section-title {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em;
+    color: #7d8590; margin: 28px 0 12px; font-weight: 600;
+  }
+  .section-title:first-child { margin-top: 0; }
+
+  /* Big chart for today */
+  .chart-wrap {
     background: #161b22; border: 1px solid #30363d; border-radius: 12px;
-    padding: 14px 18px; margin: 0 0 14px;
+    padding: 14px 8px 8px; margin: 0 0 14px;
+    height: 220px;
   }
-  .panel h3 {
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
-    color: #7d8590; margin: 0 0 8px; font-weight: 600;
+  #today-chart { width: 100%; height: 100%; }
+
+  /* Best-time cards */
+  .best-row { display: flex; flex-direction: column; gap: 8px; }
+  .best-card {
+    background: #161b22; border: 1px solid #30363d; border-radius: 10px;
+    padding: 12px 14px;
+    display: flex; align-items: center; justify-content: space-between;
   }
-  .best { font-size: 22px; font-weight: 600; color: #58a6ff; line-height: 1.2; }
-  .best-detail { color: #7d8590; font-size: 13px; margin-top: 2px; }
-  #spark-wrap { height: 88px; }
-  #sparkline { width: 100%; height: 100%; }
-  .nav { display: flex; gap: 10px; margin: 24px 0 0; }
+  .best-card .when {
+    font-size: 17px; font-weight: 600; color: #58a6ff;
+  }
+  .best-card .when .day {
+    color: #e6edf3; font-weight: 500; margin-right: 6px;
+  }
+  .best-card .count {
+    font-size: 13px; color: #7d8590;
+  }
+  .best-card.gold { border-color: rgba(63,185,80,0.4); background: rgba(63,185,80,0.06); }
+  .best-card.gold .when { color: #3fb950; }
+
+  .closed-note {
+    text-align: center; color: #7d8590; font-size: 14px;
+    padding: 20px 12px; border: 1px dashed #30363d; border-radius: 10px;
+  }
+
+  /* Pool switcher */
+  .nav { display: flex; gap: 10px; margin: 28px 0 0; }
   .nav a {
     flex: 1; padding: 11px 14px;
     border: 1px solid #30363d; border-radius: 8px;
@@ -43,7 +77,7 @@
     border-color: #58a6ff; color: #58a6ff;
   }
   .footer {
-    margin: 24px 0 0; text-align: center; font-size: 11px; color: #7d8590;
+    margin: 22px 0 0; text-align: center; font-size: 11px; color: #7d8590;
   }
   .footer a { color: #7d8590; }
 </style>
@@ -55,29 +89,30 @@
      hx-swap="none"
      hx-on::after-request="updateStatus(event.detail.xhr)">
 
-  <h1 class="title">🏊 {{ label }}</h1>
-  <p class="subtitle" id="now">loading…</p>
-
-  <div class="big-num">
-    <div class="n" id="current">—</div>
-    <div class="lbl">people right now</div>
+  <div class="h-row">
+    <h1>🏊 {{ label }}</h1>
+    <span class="nowtime" id="nowtime">—</span>
   </div>
 
-  <p class="compare" id="compare">&nbsp;</p>
-
-  <div class="row">
-    <span class="badge" id="status">—</span>
+  <div class="status-pill">
+    <span class="dot" id="dot"></span>
+    <span><span class="current" id="current">—</span> <span class="muted">people now</span></span>
+    <span class="sep">·</span>
+    <span class="muted" id="open-info">—</span>
   </div>
 
-  <div class="panel">
-    <h3>Best window today</h3>
-    <div class="best" id="best">—</div>
-    <div class="best-detail" id="best-detail">—</div>
+  <h2 class="section-title">Best time today</h2>
+
+  <div class="chart-wrap"><canvas id="today-chart"></canvas></div>
+
+  <div class="best-row" id="today-best">
+    <div class="closed-note">loading…</div>
   </div>
 
-  <div class="panel">
-    <h3>Today so far</h3>
-    <div id="spark-wrap"><canvas id="sparkline"></canvas></div>
+  <h2 class="section-title">Quietest in the next 7 days</h2>
+
+  <div class="best-row" id="week-best">
+    <div class="closed-note">loading…</div>
   </div>
 
   <div class="nav">
@@ -91,83 +126,180 @@
 </div>
 
 <script>
-let sparklineChart = null;
+let todayChart = null;
+
+function renderTodayChart(pattern, todayBest, nowSlot) {
+  const labels = pattern.map(p => p.t);
+  const typical = pattern.map(p => p.typical);
+  const actual = pattern.map(p => p.actual);
+
+  // build a backgroundColor array for the bar overlay marking best windows
+  const bestSlots = new Set();
+  todayBest.forEach(w => {
+    bestSlots.add(w.t_start);
+    // also the second 15-min slot
+    const [h, m] = w.t_start.split(':').map(Number);
+    const nextMin = h * 60 + m + 15;
+    bestSlots.add(`${String(Math.floor(nextMin/60)).padStart(2,'0')}:${String(nextMin%60).padStart(2,'0')}`);
+  });
+
+  // overlay dataset: only show bars at best-window slots, height = typical
+  const overlay = pattern.map(p =>
+    bestSlots.has(p.t) ? p.typical : null
+  );
+
+  // now-marker dataset: a single point at the current slot
+  const nowIdx = pattern.findIndex(p => {
+    const [h, m] = p.t.split(':').map(Number);
+    return h * 60 + m === nowSlot;
+  });
+  const nowMarker = pattern.map((_, i) => i === nowIdx ? Math.max(...typical) * 1.05 : null);
+
+  const data = {
+    labels,
+    datasets: [
+      {
+        type: 'bar',
+        label: 'best window',
+        data: overlay,
+        backgroundColor: 'rgba(63,185,80,0.30)',
+        borderColor: 'transparent',
+        barPercentage: 1.0,
+        categoryPercentage: 1.0,
+        order: 3,
+      },
+      {
+        type: 'line',
+        label: 'typical',
+        data: typical,
+        borderColor: '#58a6ff',
+        backgroundColor: 'rgba(88,166,255,0.10)',
+        fill: true,
+        tension: 0.35,
+        pointRadius: 0,
+        borderWidth: 2,
+        order: 2,
+      },
+      {
+        type: 'line',
+        label: 'today',
+        data: actual,
+        borderColor: '#e6edf3',
+        backgroundColor: 'transparent',
+        fill: false,
+        tension: 0.2,
+        pointRadius: 0,
+        borderWidth: 2,
+        spanGaps: false,
+        order: 1,
+      },
+      {
+        type: 'bar',
+        label: 'now',
+        data: nowMarker,
+        backgroundColor: 'rgba(248,81,73,0.80)',
+        borderColor: 'transparent',
+        barPercentage: 0.08,
+        categoryPercentage: 1.0,
+        order: 0,
+      },
+    ],
+  };
+
+  const opts = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        filter: i => i.dataset.label === 'typical' || i.dataset.label === 'today',
+        callbacks: {
+          label: (ctx) => {
+            if (ctx.parsed.y == null) return null;
+            return `${ctx.dataset.label}: ${Math.round(ctx.parsed.y)} people`;
+          },
+        },
+      },
+    },
+    scales: {
+      x: {
+        ticks: {
+          color: '#7d8590', font: { size: 10 },
+          autoSkip: true, maxTicksLimit: 8,
+          callback: function(val) {
+            const lbl = this.getLabelForValue(val);
+            return lbl.endsWith(':00') ? lbl : '';
+          },
+        },
+        grid: { color: 'rgba(48,54,61,0.4)' },
+      },
+      y: {
+        beginAtZero: true,
+        ticks: { color: '#7d8590', font: { size: 10 } },
+        grid: { color: 'rgba(48,54,61,0.4)' },
+      },
+    },
+    animation: false,
+  };
+
+  if (todayChart) {
+    todayChart.data = data;
+    todayChart.options = opts;
+    todayChart.update('none');
+  } else if (window.Chart) {
+    const ctx = document.getElementById('today-chart').getContext('2d');
+    todayChart = new Chart(ctx, { type: 'bar', data, options: opts });
+  }
+}
+
+function bestCardHTML(items, rank0Gold) {
+  if (!items || items.length === 0) {
+    return '<div class="closed-note">Pool closes soon — no upcoming windows.</div>';
+  }
+  return items.map((w, i) => {
+    const cls = (rank0Gold && i === 0) ? 'best-card gold' : 'best-card';
+    const day = w.day_name ? `<span class="day">${w.day_name}</span>` : '';
+    return `
+      <div class="${cls}">
+        <div class="when">${day}${w.t_start}<span style="opacity:.5;font-weight:400">–${w.t_end}</span></div>
+        <div class="count">≈ ${Math.round(w.avg)} people</div>
+      </div>`;
+  }).join('');
+}
 
 function updateStatus(xhr) {
   if (!xhr || xhr.status !== 200) return;
   let d;
   try { d = JSON.parse(xhr.responseText); } catch (e) { return; }
 
-  document.getElementById('now').textContent = `as of ${d.now}`;
+  document.getElementById('nowtime').textContent = `${d.now}`;
   document.getElementById('current').textContent =
     d.current != null ? Math.round(d.current) : '—';
 
-  const cmp = document.getElementById('compare');
-  if (d.typical.avg != null && d.current != null) {
-    const std = d.typical.std || 1;
-    const sigmas = (d.current - d.typical.avg) / std;
-    let cls, txt;
-    if (sigmas < -0.5) {
-      cls = 'down'; txt = `↓ quieter than usual (typical: ${Math.round(d.typical.avg)})`;
-    } else if (sigmas > 0.5) {
-      cls = 'up';   txt = `↑ busier than usual (typical: ${Math.round(d.typical.avg)})`;
-    } else {
-      cls = 'flat'; txt = `~ typical for this time (avg: ${Math.round(d.typical.avg)})`;
-    }
-    cmp.innerHTML = `<span class="${cls}">${txt}</span>`;
-  } else {
-    cmp.innerHTML = '&nbsp;';
-  }
-
-  const badge = document.getElementById('status');
+  const dot = document.getElementById('dot');
+  const info = document.getElementById('open-info');
   if (d.status.is_open) {
-    badge.className = 'badge open';
-    badge.textContent = `🟢 open until ${d.status.close_h}:00`;
+    dot.className = 'dot open';
+    info.textContent = `open until ${d.status.close_h}:00`;
   } else {
-    badge.className = 'badge closed';
-    badge.textContent = `🔴 closed · opens ${String(d.status.open_h).padStart(2, '0')}:00`;
+    dot.className = 'dot closed';
+    info.textContent = `closed · opens ${String(d.status.open_h).padStart(2,'0')}:00`;
   }
 
-  if (d.best) {
-    document.getElementById('best').textContent = `→ ${d.best.start}`;
-    document.getElementById('best-detail').textContent =
-      `avg ${Math.round(d.best.avg)} people`;
-  } else if (!d.status.is_open) {
-    document.getElementById('best').textContent = '—';
-    document.getElementById('best-detail').textContent = 'closed';
+  // Today best card list
+  if (d.status.is_open) {
+    document.getElementById('today-best').innerHTML = bestCardHTML(d.today_best, true);
   } else {
-    document.getElementById('best').textContent = '—';
-    document.getElementById('best-detail').textContent = '';
+    document.getElementById('today-best').innerHTML =
+      '<div class="closed-note">Pool is closed today — see next 7 days below.</div>';
   }
 
-  const labels = d.sparkline.map(p => p.t);
-  const values = d.sparkline.map(p => p.v);
+  // Week best card list (always show)
+  document.getElementById('week-best').innerHTML = bestCardHTML(d.week_best, true);
 
-  if (sparklineChart) {
-    sparklineChart.data.labels = labels;
-    sparklineChart.data.datasets[0].data = values;
-    sparklineChart.update('none');
-  } else if (window.Chart) {
-    const ctx = document.getElementById('sparkline').getContext('2d');
-    sparklineChart = new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels: labels,
-        datasets: [{
-          data: values,
-          borderColor: '#58a6ff',
-          backgroundColor: 'rgba(88,166,255,0.10)',
-          fill: true, tension: 0.3,
-          pointRadius: 0, borderWidth: 2,
-        }],
-      },
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { display: false }, tooltip: { enabled: true } },
-        scales: { x: { display: false }, y: { display: false, beginAtZero: true } },
-        animation: false,
-      },
-    });
+  // Today chart
+  if (d.today_pattern && d.today_pattern.length) {
+    renderTodayChart(d.today_pattern, d.today_best || [], d.now_slot_min);
   }
 }
 </script>
