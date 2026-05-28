@@ -45,9 +45,9 @@ async def pool_page(request: Request, location: str):
         return RedirectResponse("/pool/oerlikon", status_code=302)
 
     return request.app.state.templates.TemplateResponse(
+        request,
         "home.html",
         {
-            "request": request,
             "location": location,
             "label": _LOCATION_LABEL[location],
         },
@@ -150,13 +150,19 @@ async def status(
         for r in sparkline_rows
     ]
 
+    def _f(row, key):
+        if row is None:
+            return None
+        v = row[key]
+        return float(v) if v is not None else None
+
     return JSONResponse(
         {
             "now": now.strftime("%H:%M"),
-            "current": float(current_row["avg"]) if current_row["avg"] is not None else None,
+            "current": _f(current_row, "avg"),
             "typical": {
-                "avg": float(typical_row["avg"]) if typical_row and typical_row["avg"] is not None else None,
-                "std": float(typical_row["std"]) if typical_row and typical_row["std"] is not None else None,
+                "avg": _f(typical_row, "avg"),
+                "std": _f(typical_row, "std"),
             },
             "status": {
                 "is_open": is_open,
