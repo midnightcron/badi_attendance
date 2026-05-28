@@ -66,10 +66,10 @@ def _slot_label(slot_min: int) -> str:
     return f"{slot_min // 60:02d}:{slot_min % 60:02d}"
 
 
-def _top_n_30min_windows(slots, min_slot, max_start, n):
-    """slots: list of {slot_min, typical}. Returns top-n least-busy 30-min windows."""
+def _candidate_30min_windows(slots, min_slot, max_start):
+    """All 30-min windows (2 consecutive 15-min slots) sorted by avg ASC."""
     by_min = {s["slot_min"]: s["typical"] for s in slots}
-    candidates = []
+    out = []
     for sm, t1 in by_min.items():
         if sm < min_slot or sm > max_start:
             continue
@@ -77,7 +77,7 @@ def _top_n_30min_windows(slots, min_slot, max_start, n):
         if t2 is None:
             continue
         avg = round((t1 + t2) / 2, 1)
-        candidates.append(
+        out.append(
             {
                 "t_start": _slot_label(sm),
                 "t_end": _slot_label(sm + 30),
@@ -85,8 +85,20 @@ def _top_n_30min_windows(slots, min_slot, max_start, n):
                 "avg": avg,
             }
         )
-    candidates.sort(key=lambda x: (x["avg"], x["slot_min"]))
-    return candidates[:n]
+    out.sort(key=lambda x: (x["avg"], x["slot_min"]))
+    return out
+
+
+def _pick_non_overlapping(candidates, n, min_gap=60):
+    """From candidates (sorted by avg), pick top-n with starts ≥ min_gap apart."""
+    picks = []
+    for c in candidates:
+        if any(abs(c["slot_min"] - p["slot_min"]) < min_gap for p in picks):
+            continue
+        picks.append(c)
+        if len(picks) == n:
+            break
+    return picks
 
 
 @router.get("/api/v2/status")
@@ -187,42 +199,45 @@ async def status(
             }
         )
 
-    # 5. Today's top 3 best 30-min windows (future-only, 30 min before close)
+    # 5. Today's top 3 best 30-min windows — non-overlapping, future-only,
+    #    leaving 30 min before close for the actual swim.
     today_best = []
     if is_open:
-        today_best = _top_n_30min_windows(
+        candidates = _candidate_30min_windows(
             week_patterns[dow],
             min_slot=current_slot_min,
             max_start=close_h * 60 - 30,
-            n=3,
         )
+        today_best = _pick_non_overlapping(candidates, n=3, min_gap=60)
 
-    # 6. Week's top 5 best 30-min windows across the next 7 days
-    week_best = []
+    # 6. Week's top 5 best windows across the next 7 days.
+    #    One winner per day (avoids "tomorrow evening" repeating four times),
+    #    then keep the 5 quietest across all days.
+    day_winners = []
     for offset in range(7):
         target_date = now.date() + timedelta(days=offset)
         target_dow = target_date.weekday()
         oh, ch = hours_map[target_dow]
         min_slot = current_slot_min if offset == 0 else oh * 60
-        windows = _top_n_30min_windows(
+        candidates = _candidate_30min_windows(
             week_patterns[target_dow],
             min_slot=min_slot,
             max_start=ch * 60 - 30,
-            n=5,
         )
-        for w in windows:
-            w_copy = dict(w)
-            w_copy["dow"] = target_dow
-            if offset == 0:
-                w_copy["day_name"] = "Today"
-            elif offset == 1:
-                w_copy["day_name"] = "Tomorrow"
-            else:
-                w_copy["day_name"] = _DOW_SHORT[target_dow]
-            w_copy["date_offset"] = offset
-            week_best.append(w_copy)
-    week_best.sort(key=lambda x: (x["avg"], x["date_offset"], x["slot_min"]))
-    week_best = week_best[:5]
+        if not candidates:
+            continue
+        w = dict(candidates[0])
+        w["dow"] = target_dow
+        w["date_offset"] = offset
+        if offset == 0:
+            w["day_name"] = "Today"
+        elif offset == 1:
+            w["day_name"] = "Tomorrow"
+        else:
+            w["day_name"] = _DOW_SHORT[target_dow]
+        day_winners.append(w)
+    day_winners.sort(key=lambda x: (x["avg"], x["date_offset"]))
+    week_best = day_winners[:5]
 
     def _f(row, key):
         if row is None:
