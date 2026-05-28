@@ -1,0 +1,174 @@
+{% extends "base.html" %}
+{% block title %}{{ label }}{% endblock %}
+{% block head %}
+<style>
+  .card { max-width: 420px; margin: 0 auto; padding: 24px 20px; }
+  .title { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+  .subtitle { color: #7d8590; font-size: 13px; margin: 0 0 32px; }
+  .big-num { text-align: center; margin: 24px 0 8px; }
+  .big-num .n { font-size: 88px; font-weight: 700; line-height: 1; }
+  .big-num .lbl { font-size: 13px; color: #7d8590; margin-top: 6px; letter-spacing: 0.04em; }
+  .compare { text-align: center; font-size: 14px; margin: 0 0 24px; min-height: 21px; }
+  .compare .down { color: #3fb950; }
+  .compare .up { color: #f85149; }
+  .compare .flat { color: #d29922; }
+  .row { display: flex; align-items: center; justify-content: center; margin: 0 0 28px; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 7px 16px; border-radius: 16px; font-size: 13px; font-weight: 500;
+  }
+  .badge.open { background: rgba(63,185,80,0.14); color: #3fb950; }
+  .badge.closed { background: rgba(248,81,73,0.14); color: #f85149; }
+  .panel {
+    background: #161b22; border: 1px solid #30363d; border-radius: 12px;
+    padding: 14px 18px; margin: 0 0 14px;
+  }
+  .panel h3 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: #7d8590; margin: 0 0 8px; font-weight: 600;
+  }
+  .best { font-size: 22px; font-weight: 600; color: #58a6ff; line-height: 1.2; }
+  .best-detail { color: #7d8590; font-size: 13px; margin-top: 2px; }
+  #spark-wrap { height: 88px; }
+  #sparkline { width: 100%; height: 100%; }
+  .nav { display: flex; gap: 10px; margin: 24px 0 0; }
+  .nav a {
+    flex: 1; padding: 11px 14px;
+    border: 1px solid #30363d; border-radius: 8px;
+    text-align: center; font-size: 14px; font-weight: 500;
+    color: #e6edf3;
+  }
+  .nav a.active {
+    background: rgba(88,166,255,0.12);
+    border-color: #58a6ff; color: #58a6ff;
+  }
+  .footer {
+    margin: 24px 0 0; text-align: center; font-size: 11px; color: #7d8590;
+  }
+  .footer a { color: #7d8590; }
+</style>
+{% endblock %}
+{% block body %}
+<div class="card"
+     hx-get="/api/v2/status?location={{ location }}"
+     hx-trigger="load, every 60s"
+     hx-swap="none"
+     hx-on::after-request="updateStatus(event.detail.xhr)">
+
+  <h1 class="title">🏊 {{ label }}</h1>
+  <p class="subtitle" id="now">loading…</p>
+
+  <div class="big-num">
+    <div class="n" id="current">—</div>
+    <div class="lbl">people right now</div>
+  </div>
+
+  <p class="compare" id="compare">&nbsp;</p>
+
+  <div class="row">
+    <span class="badge" id="status">—</span>
+  </div>
+
+  <div class="panel">
+    <h3>Best window today</h3>
+    <div class="best" id="best">—</div>
+    <div class="best-detail" id="best-detail">—</div>
+  </div>
+
+  <div class="panel">
+    <h3>Today so far</h3>
+    <div id="spark-wrap"><canvas id="sparkline"></canvas></div>
+  </div>
+
+  <div class="nav">
+    <a href="/pool/oerlikon" class="{% if location == 'oerlikon' %}active{% endif %}">Oerlikon</a>
+    <a href="/pool/city" class="{% if location == 'city' %}active{% endif %}">City</a>
+  </div>
+
+  <p class="footer">
+    <a href="/api/dashboard?location={{ location }}">old dashboard</a>
+  </p>
+</div>
+
+<script>
+let sparklineChart = null;
+
+function updateStatus(xhr) {
+  if (!xhr || xhr.status !== 200) return;
+  let d;
+  try { d = JSON.parse(xhr.responseText); } catch (e) { return; }
+
+  document.getElementById('now').textContent = `as of ${d.now}`;
+  document.getElementById('current').textContent =
+    d.current != null ? Math.round(d.current) : '—';
+
+  const cmp = document.getElementById('compare');
+  if (d.typical.avg != null && d.current != null) {
+    const std = d.typical.std || 1;
+    const sigmas = (d.current - d.typical.avg) / std;
+    let cls, txt;
+    if (sigmas < -0.5) {
+      cls = 'down'; txt = `↓ quieter than usual (typical: ${Math.round(d.typical.avg)})`;
+    } else if (sigmas > 0.5) {
+      cls = 'up';   txt = `↑ busier than usual (typical: ${Math.round(d.typical.avg)})`;
+    } else {
+      cls = 'flat'; txt = `~ typical for this time (avg: ${Math.round(d.typical.avg)})`;
+    }
+    cmp.innerHTML = `<span class="${cls}">${txt}</span>`;
+  } else {
+    cmp.innerHTML = '&nbsp;';
+  }
+
+  const badge = document.getElementById('status');
+  if (d.status.is_open) {
+    badge.className = 'badge open';
+    badge.textContent = `🟢 open until ${d.status.close_h}:00`;
+  } else {
+    badge.className = 'badge closed';
+    badge.textContent = `🔴 closed · opens ${String(d.status.open_h).padStart(2, '0')}:00`;
+  }
+
+  if (d.best) {
+    document.getElementById('best').textContent = `→ ${d.best.start}`;
+    document.getElementById('best-detail').textContent =
+      `avg ${Math.round(d.best.avg)} people`;
+  } else if (!d.status.is_open) {
+    document.getElementById('best').textContent = '—';
+    document.getElementById('best-detail').textContent = 'closed';
+  } else {
+    document.getElementById('best').textContent = '—';
+    document.getElementById('best-detail').textContent = '';
+  }
+
+  const labels = d.sparkline.map(p => p.t);
+  const values = d.sparkline.map(p => p.v);
+
+  if (sparklineChart) {
+    sparklineChart.data.labels = labels;
+    sparklineChart.data.datasets[0].data = values;
+    sparklineChart.update('none');
+  } else if (window.Chart) {
+    const ctx = document.getElementById('sparkline').getContext('2d');
+    sparklineChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: [{
+          data: values,
+          borderColor: '#58a6ff',
+          backgroundColor: 'rgba(88,166,255,0.10)',
+          fill: true, tension: 0.3,
+          pointRadius: 0, borderWidth: 2,
+        }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: { enabled: true } },
+        scales: { x: { display: false }, y: { display: false, beginAtZero: true } },
+        animation: false,
+      },
+    });
+  }
+}
+</script>
+{% endblock %}
