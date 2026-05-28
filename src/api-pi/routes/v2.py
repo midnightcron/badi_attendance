@@ -199,29 +199,27 @@ async def status(
             }
         )
 
-    # 5. Today's top 3 best 30-min windows — non-overlapping, future-only,
-    #    leaving 30 min before close for the actual swim.
-    today_best = []
-    if is_open:
-        candidates = _candidate_30min_windows(
-            week_patterns[dow],
-            min_slot=current_slot_min,
-            max_start=close_h * 60 - 30,
-        )
-        today_best = _pick_non_overlapping(candidates, n=3, min_gap=60)
+    # 5. Today's top 3 best 30-min windows — non-overlapping, anytime today
+    #    after now and at least 30 min before close. Don't gate on
+    #    is_open right now (pool may open later today).
+    today_candidates = _candidate_30min_windows(
+        week_patterns[dow],
+        min_slot=current_slot_min,
+        max_start=close_h * 60 - 30,
+    )
+    today_best = _pick_non_overlapping(today_candidates, n=3, min_gap=60)
 
-    # 6. Week's top 5 best windows across the next 7 days.
-    #    One winner per day (avoids "tomorrow evening" repeating four times),
-    #    then keep the 5 quietest across all days.
+    # 6. Week's top 5 best windows across the *other* days of the week
+    #    (offset 1..6). Today is already covered in section 5; including it
+    #    here would just duplicate. One quietest window per day.
     day_winners = []
-    for offset in range(7):
+    for offset in range(1, 7):
         target_date = now.date() + timedelta(days=offset)
         target_dow = target_date.weekday()
         oh, ch = hours_map[target_dow]
-        min_slot = current_slot_min if offset == 0 else oh * 60
         candidates = _candidate_30min_windows(
             week_patterns[target_dow],
-            min_slot=min_slot,
+            min_slot=oh * 60,
             max_start=ch * 60 - 30,
         )
         if not candidates:
@@ -229,12 +227,7 @@ async def status(
         w = dict(candidates[0])
         w["dow"] = target_dow
         w["date_offset"] = offset
-        if offset == 0:
-            w["day_name"] = "Today"
-        elif offset == 1:
-            w["day_name"] = "Tomorrow"
-        else:
-            w["day_name"] = _DOW_SHORT[target_dow]
+        w["day_name"] = "Tomorrow" if offset == 1 else _DOW_SHORT[target_dow]
         day_winners.append(w)
     day_winners.sort(key=lambda x: (x["avg"], x["date_offset"]))
     week_best = day_winners[:5]

@@ -286,19 +286,23 @@ function updateStatus(xhr) {
     info.textContent = `closed · opens ${String(d.status.open_h).padStart(2,'0')}:00`;
   }
 
-  // Today best card list
-  if (d.status.is_open) {
+  // Today best card list — show whenever there are upcoming windows today,
+  // regardless of whether the pool is open right now.
+  const hasUpcoming = d.today_best && d.today_best.length > 0;
+  const chartWrap = document.querySelector('.chart-wrap');
+  if (hasUpcoming) {
     document.getElementById('today-best').innerHTML = bestCardHTML(d.today_best, true);
+    chartWrap.style.display = '';
   } else {
     document.getElementById('today-best').innerHTML =
-      '<div class="closed-note">Pool is closed today — see next 7 days below.</div>';
+      '<div class="closed-note">No upcoming windows today — see below.</div>';
+    chartWrap.style.display = 'none';
   }
 
-  // Week best card list (always show)
+  // Week best card list (always show; excludes today on purpose)
   document.getElementById('week-best').innerHTML = bestCardHTML(d.week_best, true);
 
-  // Today chart
-  if (d.today_pattern && d.today_pattern.length) {
+  if (hasUpcoming && d.today_pattern && d.today_pattern.length) {
     renderTodayChart(d.today_pattern, d.today_best || [], d.now_slot_min);
   }
 }
