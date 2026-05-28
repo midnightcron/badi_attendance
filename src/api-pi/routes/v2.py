@@ -39,7 +39,11 @@ async def home() -> RedirectResponse:
     return RedirectResponse("/pool/oerlikon", status_code=302)
 
 
-@router.get("/pool/{location}", response_class=HTMLResponse, include_in_schema=False)
+@router.get(
+    "/pool/{location}",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
 async def pool_page(request: Request, location: str):
     if location not in _LOCATION_HOURS:
         return RedirectResponse("/pool/oerlikon", status_code=302)
@@ -79,22 +83,24 @@ async def status(
         """
     )
 
-    # 2. Typical — same weekday + same 15-min slot, full history
+    # 2. Typical — same weekday + same 15-min slot, full history.
+    # Uses the occupancy_15min continuous aggregate (~8.5K rows vs 1.5M raw).
+    avg_col = f"avg_{location}"
+    std_col = f"std_{location}"
     typical_row = await pool.fetchrow(
         f"""
         SELECT
-          ROUND(AVG({col})::numeric, 1) AS avg,
-          ROUND(STDDEV({col})::numeric, 1) AS std
-        FROM occupancy
-        WHERE EXTRACT(DOW FROM ts AT TIME ZONE 'Europe/Zurich')::int = $1
-          AND EXTRACT(HOUR FROM ts AT TIME ZONE 'Europe/Zurich')::int = $2
-          AND (EXTRACT(MINUTE FROM ts AT TIME ZONE 'Europe/Zurich')::int / 15) = $3
-          AND {col} IS NOT NULL
+          ROUND(AVG({avg_col})::numeric, 1) AS avg,
+          ROUND(AVG({std_col})::numeric, 1) AS std
+        FROM occupancy_15min
+        WHERE EXTRACT(DOW FROM bucket AT TIME ZONE 'Europe/Zurich')::int = $1
+          AND EXTRACT(HOUR FROM bucket AT TIME ZONE 'Europe/Zurich')::int = $2
+          AND (EXTRACT(MINUTE FROM bucket AT TIME ZONE 'Europe/Zurich')::int / 15) = $3
         """,
         dow, hour, quarter,
     )
 
-    # 3. Best window today — lowest historical 15-min slot still ahead of us
+    # 3. Best window today — lowest historical 15-min slot still ahead of us.
     best = None
     if is_open:
         current_slot_min = hour * 60 + quarter * 15
@@ -103,13 +109,12 @@ async def status(
             f"""
             WITH slots AS (
               SELECT
-                (EXTRACT(HOUR FROM ts AT TIME ZONE 'Europe/Zurich')::int * 60
-                  + (EXTRACT(MINUTE FROM ts AT TIME ZONE 'Europe/Zurich')::int / 15) * 15
+                (EXTRACT(HOUR FROM bucket AT TIME ZONE 'Europe/Zurich')::int * 60
+                  + (EXTRACT(MINUTE FROM bucket AT TIME ZONE 'Europe/Zurich')::int / 15) * 15
                 ) AS slot_min,
-                AVG({col})::numeric AS avg
-              FROM occupancy
-              WHERE EXTRACT(DOW FROM ts AT TIME ZONE 'Europe/Zurich')::int = $1
-                AND {col} IS NOT NULL
+                AVG({avg_col})::numeric AS avg
+              FROM occupancy_15min
+              WHERE EXTRACT(DOW FROM bucket AT TIME ZONE 'Europe/Zurich')::int = $1
               GROUP BY slot_min
             )
             SELECT slot_min, ROUND(avg, 1) AS avg
