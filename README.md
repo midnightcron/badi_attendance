@@ -1,7 +1,5 @@
 # Badi Occupancy Monitor
 
-[![API Deploy](https://github.com/midnightcron/badi_attendance/actions/workflows/deploy-api.yml/badge.svg?branch=main)](https://github.com/midnightcron/badi_attendance/actions/workflows/deploy-api.yml)
-
 Real-time occupancy monitoring for Zurich swimming pools using WebSocket data collection on Azure.
 
 ## What It Does
@@ -112,9 +110,6 @@ badi_oerlikon_attendence/
 │   ├── main.tf                         # RG, storage account, tables, ACR, Log Analytics, ACI
 │   ├── variables.tf
 │   └── outputs.tf
-│
-├── .github/workflows/
-│   └── deploy-api.yml                  # Deploys on src/api/** changes
 │
 ├── scripts/
 │   └── deploy-collector-aci.sh         # Full ACI redeploy (Terraform + Docker + push + restart)

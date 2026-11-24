@@ -213,16 +213,9 @@ storage account name.
 
 ## CI/CD
 
-One path-filtered GitHub Actions workflow:
-
-| Workflow   | File              | Triggers on              |
-| ---------- | ----------------- | ------------------------ |
-| Deploy API | `deploy-api.yml`  | `src/api/**` on `main`   |
-
-Steps: checkout → Python 3.11 → pip install → verify packages → zip → OIDC login →
-deploy via `Azure/functions-action`.
-
-The ACI collector is **not** deployed via CI. Use `scripts/deploy-collector-aci.sh` directly.
+None. The `deploy-api.yml` Azure Functions workflow was removed in 2026-11 after
+the Azure subscription was cancelled; the app now runs on the Pi via the
+`deploy/` compose stack.
 
 ## WebSocket API Protocol
 
